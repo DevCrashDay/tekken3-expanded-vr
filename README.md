@@ -2,7 +2,7 @@
 
 **Tekken 3 Expanded** puts the 18 characters Tekken Tag Tournament added to the roster into Tekken 3, playable in every mode and fought by the CPU. It runs on [Tekken3Recompiled](https://github.com/FishB0nes98/Tekken3Recompiled), the PC recompilation of Tekken 3.
 
-DEV DIARY 1.2 : https://youtu.be/YvDqCwzFNps
+VIDEO 1.3.0 : https://www.youtube.com/watch?v=ROoNkLo7EyA
 
 > **No game files are included.** You provide your own Tekken 3 disc image and your own Tekken Tag Tournament and Tekken 3 arcade ROMs. The setup builds everything from them on your machine.
 
