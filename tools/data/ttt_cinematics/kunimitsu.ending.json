@@ -1,0 +1,18 @@
+{
+ "about": "Kunimitsu's Tekken Tag Tournament (PS2) ending (scene 8): a duel with Yoshimitsu in the snowy forest, both strike at once (sparks at 443), Yoshimitsu falls, Kunimitsu spins her knife and leaps away in a puff (sprites at 1187). Converted by tools/ps2/ttt_to_cine.py (docs/CINE-CONVERT.md). The snowfall is the TTT stage's, not the script's: the T3 forest has none (the user's choice, 2026-10-14).",
+ "scene": "kunimitsu",
+ "arena": 2,
+ "dark": 0,
+ "trigger": "arcade-end p1=kunimitsu",
+ "sprite_colour": "1c1c1c",
+ "sprite_why": "TTT's puff is snow (white, alpha-blended); in a forest without snow the user wants light grey smoke: an additive grey this faint",
+ "actors": [
+  {"cast": "kunimitsu", "costume": 0, "skeleton": "kunimitsu",
+   "retarget": ["--basis", "canonical", "--calib-frame", "0:974", "--twists", "--collars"],
+   "why": "TTT costume -1 (the player's): T3 costume 0; her own head basis on her stance at 974 (session C); the arms' roll and the hands from the PS2 (--twists: rolled arms tore the mesh)"},
+  {"cast": "yoshimitsu", "costume": 0, "skeleton": "kunimitsu", "idle": "roster/Yoshimitsu-TTT1-idle.poses",
+   "retarget": ["--calib", "{actor0}", "--calib-frame", "0:326", "--twists", "--collars"],
+   "why": "the Tekken 3 native (the user, 2026-10-14: his hands do not show in this ending) on Kunimitsu's TTT1 skeleton, his TTT1 stance; TTT costume 2: T3 costume 0"}
+ ],
+ "ignore": []
+}

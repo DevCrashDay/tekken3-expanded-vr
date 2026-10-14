@@ -63,6 +63,10 @@ def ready():
         if state.get('ttt1',state.get('jun')) and not ttt1_current(INSTALLED):return False
         # Cinematics older than this checkout (tools/ttt_cinematics.py's CINEMATICS_VERSION).
         if state.get('ttt_cinematics') and not cinematics_current():return False
+        # Arcade stage packs older than this checkout (tools/arcade_stages/version.py),
+        # or never made for an install set up with tekken3.zip before they existed.
+        wanted=state.get('arcade_stages',bool(load_json(STATE/'last-inputs.json').get('tekken3')))
+        if wanted and not arcade_stages_current(ARCADE_STAGES_INSTALLED):return False
     except OSError:return False
     return True
 
@@ -82,6 +86,7 @@ def android_ready():
     code, disc and current imports are here, without the PC build."""
     state=load_json(STATE/'android.json')
     if state.get('ttt1') and not ttt1_current(ROSTER):return False
+    if state.get('arcade_stages') and not arcade_stages_current(ARCADE_STAGES_PACKS):return False
     return (state.get('release')==RELEASE and (ROOT/'generated/SLUS_004.02_dispatch.c').is_file()
             and (ROOT/'disc/Tekken 3 (USA).cue').is_file())
 
@@ -104,11 +109,46 @@ CINEMATICS=BUILD/'mods/ttt-cinematics'
 # takes it as mods/ttt-cinematics (tools/android/make_apk.py).
 ANDROID_CINEMATICS=ROOT/'workspace/ttt-cinematics'
 
+# Arcade Stages (tools/arcade_stages/install.py): the stage packs made from
+# tekken3.zip, which CMakeLists.txt stages beside the game (PC and Android),
+# and their copy there, which stays when "free up disk space" deletes workspace/.
+ARCADE_STAGES_PACKS=ROOT/'workspace/arcade-stages/pack'
+ARCADE_STAGES_INSTALLED=BUILD/'mods/arcade-stages'
+
+def arcade_stages_version():
+    """tools/arcade_stages/version.py: ARCADE_STAGES_VERSION and the stamp."""
+    if 'arcade_stages_version' not in sys.modules:
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('arcade_stages_version',Path(__file__).resolve().parents[1]/'tools/arcade_stages/version.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        sys.modules['arcade_stages_version']=module
+    return sys.modules['arcade_stages_version']
+
+def arcade_stages_current(folder):
+    return arcade_stages_version().current(folder)
+
+def prepare_arcade_stages(tekken3,env,pc=True):
+    """The 13 arcade stage packs from tekken3.zip, unless this version is
+    already there. Optional: a failure only keeps the PS1 stages. True when
+    the packs are ready."""
+    if arcade_stages_current(ARCADE_STAGES_PACKS):return True
+    # Only beside the game (workspace/ freed): the build keeps that copy.
+    if pc and not (ARCADE_STAGES_PACKS/'version.txt').exists() and arcade_stages_current(ARCADE_STAGES_INSTALLED):return True
+    emit(message='Preparing the arcade stages',detail='Converting the Tekken 3 arcade stages from your tekken3.zip.')
+    try:
+        run([sys.executable,ROOT/'tools/arcade_stages/install.py','--tekken3',tekken3,'--out',ARCADE_STAGES_PACKS],environment=env,
+            friendly='The arcade stages could not be prepared.')
+    except SetupError:
+        emit(message='Skipping the arcade stages',detail='They could not be prepared from your tekken3.zip (see the setup log). The game keeps the PS1 stages.')
+        return False
+    return True
+
 def cinematics_current():
     tools=str(ROOT/'tools')
     if tools not in sys.path:sys.path.insert(0,tools)
     import ttt_cinematics as C
-    return (CINEMATICS/'cinematics.txt').is_file() and C.read_stamp(CINEMATICS)>=C.CINEMATICS_VERSION
+    # triggers.txt: the engine's table; cinematics.txt: the old way (--old-way).
+    return any((CINEMATICS/n).is_file() for n in ('triggers.txt','cinematics.txt')) and C.read_stamp(CINEMATICS)>=C.CINEMATICS_VERSION
 
 def cinematics_models_ready():
     """Jin's models for the TTT cinematics, made once from the import's work files."""
@@ -237,10 +277,12 @@ def installed(name,hint):
 def tools():
     """Windows: the pinned compiler pack (no installation). macOS / Linux:
     the installed cmake, ninja and compiler (brew install cmake ninja sdl3,
-    xcode-select --install); None."""
+    xcode-select --install; on Linux, Setup Tekken 3.sh names the packages); None."""
     if not WINDOWS:
-        for name in ('cmake','ninja'):installed(name,'On macOS: brew install cmake ninja sdl3')
-        if not (shutil.which('cc') or shutil.which('clang')):raise SetupError('No C compiler. On macOS: xcode-select --install')
+        mac=sys.platform=='darwin'
+        for name in ('cmake','ninja'):installed(name,'On macOS: brew install cmake ninja sdl3' if mac else 'Run Setup Tekken 3.sh in a terminal: it names the packages to install.')
+        if not (shutil.which('cc') or shutil.which('clang')):
+            raise SetupError('No C compiler. '+('On macOS: xcode-select --install' if mac else 'Run Setup Tekken 3.sh in a terminal: it names the packages to install.'))
         return None
     folder=STATE/'tools/toolchain-1.0.10'
     marker=folder/'.ready.json'
@@ -256,7 +298,7 @@ def tools():
 
 def prepare_textures():
     from PIL import Image
-    emit(message='Preparing the included mods',detail='Skins, outfit gallery and HD stage textures.')
+    emit(message='Preparing the included mods',detail='Skins and outfit gallery.')
     for record in load_json(ROOT/'tools/data/texture_payloads.json'):
         target=ROOT/record['path'];png=target.with_suffix('.png')
         if target.is_file() and digest(target)==record['sha256']:continue
@@ -343,9 +385,9 @@ def validate_ttt1(ttt,updating=False):
     if str(ROOT/'tools') not in sys.path:sys.path.insert(0,str(ROOT/'tools'))
     import arcade_model_probe as probe
     definitions=load_json(probe.MANIFEST)['sets']
-    try:probe.reconstruct(ttt,definitions['tektagt'])
+    try:probe.reconstruct(ttt,definitions[probe.ttt_set(ttt)])
     except (ValueError,zipfile.BadZipFile,OSError) as error:
-        log_line(str(error));raise SetupError('The arcade ZIP does not match the supported set. The TTT1 characters need tektagt (World C1), non-merged.') from error
+        log_line(str(error));raise SetupError('The arcade ZIP does not match a supported set. The TTT1 characters need tektagt (World C1), tektagtuc1 (US C1), tektagtub (US B) or tektagtjc1 (Japan C1), non-merged.') from error
 
 # tekken3.zip's program ROMs, TET2/VER.E1 (tet2vere1.2e, .2j), by CRC as MAME
 # finds them: sets from older MAME versions give the same chips other names.
@@ -381,11 +423,13 @@ def build_game(toolchain,env,include_ttt1):
         except FileNotFoundError:pass
     if WINDOWS:play_exe(cmake,env)
     elif sys.platform=='darwin':play_app()
+    else:play_linux()
 
 # Double-click to play, beside the setup script. A convenience only: when one
 # cannot be made, the setup script still does the same.
 PLAY_EXE=ROOT/'Tekken 3 Expanded.exe'
 PLAY_APP=ROOT/'Tekken 3 Expanded.app'
+PLAY_SH=ROOT/'Tekken 3 Expanded.sh'
 
 def play_exe(cmake,env):
     """launcher/bootstrap.c, built by the game's CMake project (tekken3-play)."""
@@ -429,6 +473,48 @@ def play_app():
         Image.open(ROOT/'packaging/icon.png').convert('RGBA').save(contents/'Resources/icon.icns')
         os.utime(PLAY_APP)                         # Finder reads the icon again
     except Exception as error:log_line(f'Tekken 3 Expanded.app icon skipped: {error}')
+
+# Linux: plays once setup is done, else (an update needs it) opens the setup.
+# The game runs in the foreground, so Steam sees it running; without a usable
+# setup Python (a Steam Deck set up inside Distrobox) it starts the game as built.
+SH_SCRIPT='''#!/bin/bash
+# Tekken 3 Expanded (Linux), written by launcher/setup_backend.py.
+cd "$(dirname "$(readlink -f "$0")")" || exit 1
+# 3: not ready (an update needs the setup); any other failure (no usable
+# Python) plays the game as built.
+.setup/venv/bin/python -c 'import sys; sys.path.insert(0, "launcher"); import setup_backend as b; sys.exit(0 if b.ready() else 3)' 2>/dev/null
+[ $? -eq 3 ] && exec ./"Setup Tekken 3.sh" "$@"
+launcher=(); [[ " $* " == *" --settings "* ]] && launcher=(--launcher)
+exec build-release/Tekken_3_Expanded "${launcher[@]}" --game "$PWD/game.toml" --disc "$PWD/disc/Tekken 3 (USA).cue"
+'''
+
+DESKTOP_ENTRY='''[Desktop Entry]
+Type=Application
+Name=Tekken 3 Expanded
+Comment=Tekken 3 with the Tekken Tag Tournament roster
+Exec={exec}
+Path={root}
+Icon={icon}
+Terminal=false
+Categories=Game;
+'''
+
+def desktop_entry():
+    """~/.local/share/applications (XDG_DATA_HOME): the applications menu's entry."""
+    home=os.environ.get('XDG_DATA_HOME') or os.path.join(os.path.expanduser('~'),'.local/share')
+    return Path(home)/'applications/tekken3-expanded.desktop'
+
+def play_linux():
+    """The Linux counterpart of Tekken 3 Expanded.exe: a script beside the
+    setup, and an entry in the applications menu that runs it."""
+    try:PLAY_SH.write_text(SH_SCRIPT,encoding='utf-8');PLAY_SH.chmod(0o755)
+    except OSError as error:log_line(f'Tekken 3 Expanded.sh skipped: {error}');return
+    quoted='"'+re.sub(r'(["`$\\])',r'\\\1',str(PLAY_SH))+'"'    # Exec= quoting (Desktop Entry spec)
+    try:
+        entry=desktop_entry();entry.parent.mkdir(parents=True,exist_ok=True)
+        entry.write_text(DESKTOP_ENTRY.format(exec=quoted,root=ROOT,icon=ROOT/'packaging/icon.png'),encoding='utf-8')
+        entry.chmod(0o755)
+    except OSError as error:log_line(f'Tekken 3 Expanded menu entry skipped: {error}')
 
 # Only the setup and its updates read these: the downloaded tools, the TTT1
 # import's work files and the build's object files. generated/ stays: the game
@@ -527,10 +613,11 @@ def prepare(disc,ttt,include_ttt1,tekken3=None,jin_red=False,cinematics=False,tt
         validate_disc(disc,updating)
     else:log_line(f'Game generated by release {RELEASE}: rebuilding only')
     # Optional: an unsupported tekken3.zip only costs the arcade difficulty
-    # levels, checked now rather than failing at the end of the import.
+    # levels and the arcade stages, checked now rather than failing at the end
+    # of the import.
     if tekken3 and not tekken3_supported(tekken3):
-        log_line(f'{tekken3}: no TET2/VER.E1 program ROMs, arcade difficulty levels skipped')
-        emit(message='Skipping the arcade difficulty levels',detail='Your tekken3.zip is not the TET2/VER.E1 set (see the README). Setup goes on without them.')
+        log_line(f'{tekken3}: no TET2/VER.E1 program ROMs, arcade difficulty levels and arcade stages skipped')
+        emit(message='Skipping the arcade difficulty levels and arcade stages',detail='Your tekken3.zip is not the TET2/VER.E1 set (see the README). Setup goes on without them.')
         tekken3=None
     jin_red=jin_red or cinematics
     plan,steps=ttt1_plan(jin_red,tekken3,cinematics) if include_ttt1 else ('none',[])
@@ -561,8 +648,10 @@ def prepare(disc,ttt,include_ttt1,tekken3=None,jin_red=False,cinematics=False,tt
         run(command,
             environment=env,friendly="The TTT1 characters' import could not finish. Open the setup log for details, then click Try again.")
     elif plan=='update':update_ttt1(steps,env)
+    # Before the build: CMakeLists.txt stages the packs from workspace/.
+    arcade_stages=bool(tekken3) and prepare_arcade_stages(tekken3,env,pc)
     if not pc:
-        # The Android build stages the TTT1 guests and the difficulty levels
+        # The Android build stages the TTT1 guests, the difficulty levels and the arcade stages
         # from workspace/ itself (CMakeLists.txt).
         if include_ttt1 and not ttt1_current(ROSTER):
             raise SetupError("The TTT1 characters' import is incomplete. Click Try again.")
@@ -570,7 +659,7 @@ def prepare(disc,ttt,include_ttt1,tekken3=None,jin_red=False,cinematics=False,tt
         else:
             try:(ANDROID_CINEMATICS/'cinematics.txt').unlink()
             except FileNotFoundError:pass
-        save_json(STATE/'android.json',{'release':RELEASE,'ttt1':include_ttt1,'ttt_cinematics':cinematics})
+        save_json(STATE/'android.json',{'release':RELEASE,'ttt1':include_ttt1,'ttt_cinematics':cinematics,'arcade_stages':arcade_stages})
         android_apk(toolchain,env)
         emit('complete',message='Android APK ready',detail='Setup is complete.')
         return
@@ -585,6 +674,7 @@ def prepare(disc,ttt,include_ttt1,tekken3=None,jin_red=False,cinematics=False,tt
         try:(CINEMATICS/'cinematics.txt').unlink()
         except FileNotFoundError:pass
     save_json(STATE/'ready.json',{'release':RELEASE,'ttt1':include_ttt1,'exe_sha256':digest(EXE),'ttt_cinematics':cinematics,
+                                  'arcade_stages':arcade_stages,
                                   'ttt1_import':import_version().TTT1_IMPORT_VERSION if include_ttt1 else None})
     # After ready.json: the PC game plays even if the Android build stops.
     if android:android_apk(toolchain,env)
@@ -635,14 +725,15 @@ def launch_game(settings=False):
     if not ready():raise SetupError('Complete first setup before playing.')
     # Absolute --game and --disc: the runtime looks in the current folder first.
     subprocess.Popen([str(EXE),*(['--launcher'] if settings else []),'--game',str(ROOT/'game.toml'),
-        '--disc',str(ROOT/'disc/Tekken 3 (USA).cue')],cwd=ROOT)
+        '--disc',str(ROOT/'disc/Tekken 3 (USA).cue')],cwd=ROOT,
+        start_new_session=not WINDOWS)   # closing the setup's terminal leaves the game running
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--disc',type=Path,help='required, unless --update, or --android builds the APK of a game already set up')
     parser.add_argument('--ttt1',type=Path,default=Path())
     parser.add_argument('--no-ttt1',action='store_true')
-    parser.add_argument('--tekken3',type=Path,help='tekken3.zip: the arcade difficulty levels')
+    parser.add_argument('--tekken3',type=Path,help='tekken3.zip: the arcade difficulty levels and arcade stages')
     parser.add_argument('--jin-red-lightning',action='store_true')
     parser.add_argument('--ttt-cinematics',action='store_true',help="TTT Cinematics, the Tekken Tag Tournament endings")
     parser.add_argument('--ttt-disc',type=Path,help="Tekken Tag Tournament USA PS2 disc: the endings' music")

@@ -23,6 +23,12 @@ int __real_spu_snapshot_read(const uint8_t *p,uint32_t n) { (void)p;return n==1;
 void spu_get_global_state(SpuGlobalState *s) { memset(s,0,sizeof *s);s->ctrl=ctrl; }
 uint32_t spu_read(uint32_t a) { (void)a;return (uint16_t)main_gain; }
 void psx_sha256_compute(const uint8_t *p,size_t n,uint8_t out[32]) { (void)p;(void)n;memset(out,0,32); }
+uint32_t psx_mod_read_word(uint32_t a) { (void)a;return 0; }
+int tekken3_devil_jin_player(unsigned p) { (void)p;return 0; }
+void tekken3_ttt1_sfx_tick(void) {}
+void tekken3_ttt1_sfx_stop(void) {}
+void tekken3_ttt1_sfx_mix(int16_t *o,int n,int a,const int16_t v[2],int g) { (void)o;(void)n;(void)a;(void)v;(void)g; }
+int tekken3_embu_music_mix(int16_t *o,int n,int a,int g) { (void)o;(void)n;(void)a;(void)g;return 0; }
 static void cry(unsigned player,unsigned command) {
     CPUState cpu={0};cpu.gpr[4]=player;cpu.gpr[6]=command;cpu.gpr[31]=0x80012340;
     __wrap_func_80040C90(&cpu);assert(cpu.pc==cpu.gpr[31]);
@@ -45,18 +51,21 @@ int main(void) {
         k->bank=fake_bank;k->sample_count=12;k->loaded=k->attempted=1;
     }
     int16_t out[1200];
-    cry(1,0x2003);assert(native_calls==1 && !voices[1].group);
-    for(unsigned i=0;i<7;i++){cry(0,0x2000+i);assert(voices[0].id==164+i);}
-    cry(0,0x2007);assert(voices[0].id==164);
-    cry(0,0x3004);assert(voices[0].id==161);
-    cry(0,0x4002);assert(voices[0].id==163);
-    cry(0,0x5003);assert(voices[0].id==171);
+    cry(1,0x2003);assert(native_calls==1 && !voices[1][CRY_VOICE].group);
+    for(unsigned i=0;i<7;i++){cry(0,0x2000+i);assert(voices[0][CRY_VOICE].id==164+i);}
+    cry(0,0x2007);assert(voices[0][CRY_VOICE].id==164);
+    cry(0,0x3004);assert(voices[0][CRY_VOICE].id==161);
+    cry(0,0x4002);assert(voices[0][KO_VOICE].id==163 && voices[0][KO_VOICE].group==4);
+    cry(0,0x5003);assert(voices[0][CRY_VOICE].id==171);
+    /* B51: a cry after the KO cry has a voice of its own. */
+    assert(voices[0][KO_VOICE].id==163 && voices[0][KO_VOICE].group==4);
+    voices[0][KO_VOICE].group=0;              /* the levels below are one voice's */
     assert(native_calls==1);
     __wrap_spu_render(out,500);assert(out[900]>4000 && out[900]<4300);
-    assert(voices[0].pos==500);
+    assert(voices[0][CRY_VOICE].pos==500);
     __wrap_spu_set_host_mix_volume(0,100);
     __wrap_spu_render(out,100);for(int i=0;i<200;i++)assert(out[i]==100);
-    assert(voices[0].pos==600); /* mute advances time, avoiding delayed cries */
+    assert(voices[0][CRY_VOICE].pos==600); /* mute advances time, avoiding delayed cries */
     __wrap_spu_set_host_mix_volume(100,0);main_gain=0;
     __wrap_spu_render(out,100);assert(out[150]==100);
     main_gain=32767;ctrl=0x8000;
@@ -64,14 +73,26 @@ int main(void) {
     ctrl=0xc000;mode[1]=2;
     cry(0,0x2000);cry(1,0x3000);
     __wrap_spu_render(out,500);assert(out[900]>8000);
-    assert(voices[0].id==164 && voices[1].id==160);
+    assert(voices[0][CRY_VOICE].id==164 && voices[1][CRY_VOICE].id==160);
     native_pcm=30000;cry(0,0x2000);cry(1,0x2000);
     __wrap_spu_render(out,500);assert(out[900]==32767);
-    assert(!__wrap_spu_snapshot_read(NULL,0) && voices[0].group);
-    assert(__wrap_spu_snapshot_read(NULL,1) && !voices[0].group && !voices[1].group);
-    cry(0,0x2000);mode[0]=0;__wrap_spu_render(out,10);assert(!voices[0].group);
-    mode[0]=2;cry(0,0x2000);game_mode=9;tekken3_ttt1_voices_tick();assert(!voices[0].group);
-    game_mode=8;cry(0,0x2000);__wrap_spu_init();assert(!voices[0].group);
-    puts("Guest voice routing, independent players, gain, mute, saturation and reset: PASS");
+    assert(!__wrap_spu_snapshot_read(NULL,0) && voices[0][CRY_VOICE].group);
+    assert(__wrap_spu_snapshot_read(NULL,1) && !voices[0][CRY_VOICE].group && !voices[1][CRY_VOICE].group);
+    cry(0,0x2000);mode[0]=0;__wrap_spu_render(out,10);assert(!voices[0][CRY_VOICE].group);
+    mode[0]=2;cry(0,0x2000);game_mode=9;tekken3_ttt1_voices_tick();assert(!voices[0][CRY_VOICE].group);
+    game_mode=8;cry(0,0x2000);__wrap_spu_init();assert(!voices[0][CRY_VOICE].group);
+    /* B51: the KO cry, a damage cry 441 frames later (the KO move's next
+     * hit), then the echoes at +ECHO_DELAY (half) and +2*ECHO_DELAY (quarter)
+     * with the damage cry long over. */
+    native_pcm=100;cry(0,0x4000);__wrap_spu_render(out,441);
+    cry(0,0x3000);assert(voices[0][KO_VOICE].group==4 && voices[0][KO_VOICE].pos==441);
+    __wrap_spu_render(out,400);assert(out[600]>8000);              /* both voices */
+    while(voices[0][KO_VOICE].pos<ECHO_DELAY+300)__wrap_spu_render(out,100);
+    assert(!voices[0][CRY_VOICE].group && out[100]>2000 && out[100]<2300);
+    while(voices[0][KO_VOICE].pos<2*ECHO_DELAY+300)__wrap_spu_render(out,100);
+    assert(out[100]>1000 && out[100]<1250);
+    while(voices[0][KO_VOICE].group)__wrap_spu_render(out,100);
+    assert(voices[0][KO_VOICE].pos==1000+2*ECHO_DELAY);
+    puts("Guest voice routing, independent players, gain, mute, saturation and reset, KO cry and echoes over a later cry: PASS");
     return 0;
 }

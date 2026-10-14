@@ -1,6 +1,6 @@
 /* A native fighter may fight on its TTT1 moveset (Paul's Turn Thruster...)
  * with its own Tekken 3 model, cries and name. At the character selector of
- * Arcade, VS, Time Attack, Survival, Practice and Tekken Ball, R1 switches the native
+ * Arcade, VS, Time Attack, Survival, Practice, Tekken Ball and Tekken Force, R1 switches the native
  * under a player's cursor between its Tekken 3 and Tekken Tag Tournament
  * moves, shown on the MOVESET card under the selector's clock; the choice
  * holds from the confirmation to the fight. Guests and natives without TTT1
@@ -83,11 +83,12 @@ int tekken3_native_moves_available(unsigned id) {
 }
 
 /* Arcade, VS, Team Battle (a card for each member picked), Time Attack,
- * Survival, Practice, Tekken Ball. Tekken Force keeps the game's moves. */
-enum { TEKKEN_BALL=7 };
+ * Survival, Practice, Tekken Ball, Tekken Force (the Arcade grid; its
+ * enemies and bosses keep the game's moves: no draw, cpu_slot()). */
+enum { TEKKEN_BALL=7, TEKKEN_FORCE=8 };
 static int active(void) {
     unsigned mode=psx_mod_read_word(MODE);
-    return mode<=PRACTICE || mode==TEKKEN_BALL;
+    return mode<=PRACTICE || mode==TEKKEN_BALL || mode==TEKKEN_FORCE;
 }
 /* Test benches pick natives at the grid without a card:
  * TEKKEN3_NATIVE_MOVES=0 keeps them on T3 moves, =1 puts every native in
@@ -107,14 +108,15 @@ static int wants(unsigned p){return want[p];}
  * when closed. inject/injecting: that button, handed to the game for a few
  * polls once the card is taken. hold[pad]: the card's buttons stay away from
  * the game until that pad lets go of them. picked[slot][fighter]: the moves
- * a card was taken with for that fighter (-1 none), one per member of a
- * team, kept from the pick to the fights. */
+ * a card was taken with for that fighter (-1 none, 0 its Tekken 3 moves,
+ * k its alternative k - 1), one per member of a team, kept from the pick to
+ * the fights. */
 static uint16_t card[2],injecting[2],hold[2];
 static int inject[2];
 static signed char picked[2][NATIVES];
 static void forget_picks(void){memset(picked,-1,sizeof picked);}
 
-/* The Arcade grid (Arcade, Time Attack, Survival, Practice): screen 9,
+/* The Arcade grid (Arcade, Time Attack, Survival, Practice, Tekken Force): screen 9,
  * player blocks at 0x8011864C + 0x7C * player (state, cursor's fighter). */
 static int arcade_grid(void) {
     return psx_mod_read_word(SCREEN)==SELECT && psx_mod_read_word(0x8010ff4c)==0x27bdffd0 &&
@@ -241,16 +243,20 @@ uint16_t tekken3_native_moves_input(int player,uint16_t buttons) {
     return buttons|hold[p];
 }
 
+static int draw_alternative(unsigned id);
+static int cpu_slot(unsigned p);
 /* A native the game drew for a Team Battle team (the player's Random fill,
  * the CPU's team) takes the moves the caller tossed for it, kept for the
- * match like a card's pick. Returns 1 when it fights on its TTT1 moves, 0
- * on Tekken 3's (also when it has no TTT1 moves, or a test bench decides). */
+ * match like a card's pick; the CPU's members draw theirs as the CPU does
+ * (the CPU MOVESET row), once for the match too. Returns 1 when it fights
+ * on its TTT1 moves, 0 on Tekken 3's (also when it has no TTT1 moves, or a
+ * test bench decides). */
 int tekken3_native_moves_assign(unsigned slot,unsigned id,int ttt1) {
     if(slot>1 || id>=NATIVES)return 0;
     if(bench()>=0)return bench();
-    ttt1=ttt1 && tekken3_native_moves_available(id);
-    picked[slot][id]=(signed char)ttt1;
-    return ttt1;
+    int alt=cpu_slot(slot)?draw_alternative(id):ttt1 && tekken3_native_moves_available(id)?0:-1;
+    picked[slot][id]=(signed char)(alt+1);
+    return alt>=0;
 }
 
 /* The CPU's moves. In the modes where the CPU has no card (Arcade, Time
@@ -404,13 +410,17 @@ static void options_row(void) {
 
 /* The moves a player fights on, chosen for character `id`: a slot whose
  * card was taken for this fighter fights on the moves it chose, a CPU slot
- * on the moves it drew (once per fighter it loads); any other (a guest)
- * keeps its own. */
+ * on the moves it drew (once per fighter it loads; a Team Battle member on
+ * its team's draw, kept for the match: GH#89, each new member drew again
+ * and fought on other moves than its team's); any other (a guest) keeps
+ * its own. */
 static int drawn_id[2]={-1,-1},drawn_alt[2],chosen_id[2]={-1,-1};
 static void choose(unsigned p,unsigned id) {
     read_natives();                         /* before any card opened: the CPU's draw, a bench */
     int alt=-1;
     if(bench()>=0)alt=bench() && id<NATIVES && natives[id].count?0:-1;
+    else if(id<NATIVES && cpu_slot(p) && psx_mod_read_word(MODE)==TEAM_BATTLE &&
+            picked[p][id]>=0 && picked[p][id]<=(int)natives[id].count)alt=picked[p][id]-1;
     else if(id<NATIVES && cpu_slot(p)) {
         if(drawn_id[p]!=(int)id) {
             drawn_id[p]=(int)id;drawn_alt[p]=draw_alternative(id);
@@ -419,7 +429,7 @@ static void choose(unsigned p,unsigned id) {
                         drawn_alt[p]<0?"T3":sources[natives[id].alt[drawn_alt[p]].source]);
         }
         alt=drawn_alt[p];
-    } else if(id<NATIVES && picked[p][id]==1 && natives[id].count)alt=0;
+    } else if(id<NATIVES && picked[p][id]>=1 && picked[p][id]<=(int)natives[id].count)alt=picked[p][id]-1;
     if(tekken3_devil_jin_requested(p))alt=-1;      /* his own moves */
     if(active() && alt>=0)
         tekken3_native_moves_set(p,id,natives[id].alt[alt].key,natives[id].alt[alt].moveset);

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting (README)
+    url: https://github.com/omarma/tekken3-expanded#troubleshooting
+    about: Setup stops, disc not recognised, where the logs are. Read this first.
+  - name: Open issues
+    url: https://github.com/omarma/tekken3-expanded/issues?q=is%3Aissue
+    about: Search here before opening a new one. Comment on an existing issue instead of opening a duplicate.

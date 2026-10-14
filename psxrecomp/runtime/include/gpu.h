@@ -31,6 +31,12 @@ void     gpu_vblank_tick(void);        /* Toggle LCF, called at each simulated v
 
 /* Display presentation accessors (Phase 3). */
 const uint16_t* gpu_get_vram(void);    /* Pointer to 1024x512 16-bit VRAM */
+/* Opt-in upper VRAM half (VRAM y 512..1023 as on Namco System 12): NULL
+ * until a mod calls psx_mod_gpu_high_vram_enable (mod_plugins.h), else its
+ * 1024x512 halfwords, row 0 = VRAM y 512. Never in reach of the game's own
+ * primitives; savestates carry it only while it exists. */
+const uint16_t* gpu_high_vram_pixels(void);
+uint64_t        gpu_high_vram_primitives(void);  /* drawn reading it */
 
 typedef struct {
     uint32_t display_x, display_y;     /* VRAM start of display area (GP1(05h)) */

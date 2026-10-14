@@ -16,7 +16,7 @@ id = "xiaoyu-cherry-blossom"
 name = "Xiaoyu — Pink Silk and Blue Ribbons"
 description = "Adds Cherry Blossom to Xiaoyu's L1 skin gallery. Original costumes remain available. Restart after toggling this package."
 group = "Character Skins"
-default_enabled = true
+default_enabled = false
 
 [[plugin]]
 feature = "xiaoyu-cherry-blossom"

@@ -1,0 +1,23 @@
+format_version = 5
+id = "tekken3.stage.arcade-stages"
+version = "1.0.0"
+name = "Arcade Stages"
+author = "Tekken3Recomp"
+description = "Tekken 3 arcade stages in place of the PS1 ones (arenas 0 to 12). Needs tekken3.zip given to the setup, otherwise the PS1 stages stay. Restart after changing."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SLUS-00402"
+exe_sha256 = "fbda8b68e5799dbef4af39a161783bc670c15b0aa0e87dce65e210717da19b8c"
+
+[[feature]]
+id = "arcade-stages"
+name = "Arcade Stages"
+description = "Tekken 3 arcade stages in place of the PS1 ones (arenas 0 to 12). Needs tekken3.zip given to the setup, otherwise the PS1 stages stay. Restart after changing."
+group = "Visual Enhancements"
+default_enabled = true
+
+[[plugin]]
+feature = "arcade-stages"
+id = "tekken3.arcade-stages"

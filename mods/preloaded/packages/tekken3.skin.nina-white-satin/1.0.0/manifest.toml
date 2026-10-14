@@ -16,7 +16,7 @@ id = "nina-white-satin"
 name = "Nina — White Satin and Red Heels"
 description = "Adds White Satin to Nina's L1 skin gallery. Original costumes remain available. Restart after toggling this package."
 group = "Character Skins"
-default_enabled = true
+default_enabled = false
 
 [[plugin]]
 feature = "nina-white-satin"

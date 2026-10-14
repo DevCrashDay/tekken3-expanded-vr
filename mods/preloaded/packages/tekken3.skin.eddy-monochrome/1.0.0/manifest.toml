@@ -16,7 +16,7 @@ id = "eddy-monochrome"
 name = "Eddy Monochrome"
 description = "Adds Eddy Monochrome to Eddy's L1 gallery alongside Eddy's original outfits and Tiger Jackson. Restart after toggling this package."
 group = "Character Skins"
-default_enabled = true
+default_enabled = false
 
 [[plugin]]
 feature = "eddy-monochrome"

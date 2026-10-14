@@ -33,6 +33,12 @@ enum { MAX_SAMPLES=32, GROUP_MIN=2, GROUP_MAX=5, GROUP_KO=4 };
  * half volume, then 32 frames later at a quarter. Guests skip 80040C90, so
  * the mixer replays their KO cry the same way. */
 enum { ECHO_DELAY=44100*16/60 };
+/* Each player has two voices: its cries, and its KO cry with the echoes. A
+ * KO by a move that hits again (a multi-hit string, a juggle) sends a damage
+ * cry a few frames after the KO cry (0x80041590, life already 0): on a
+ * single voice it cut the KO cry and both echoes, whose task is separate in
+ * T3. The cry that follows plays over them instead. */
+enum { CRY_VOICE, KO_VOICE };
 /* Each player's guest has its own bank, following that guest's identity. */
 typedef struct {
     unsigned generation;
@@ -45,7 +51,7 @@ typedef struct {
     unsigned group_count[GROUP_MAX+1];
 } GuestBank;
 static GuestBank banks[2];
-static GuestVoice voices[2];
+static GuestVoice voices[2][2];
 static int sfx_gain = 100, music_gain = 100, music_muted;
 /* The Embu's music of our own (tekken3_embu_scenes.c) mutes the game's. */
 extern int tekken3_embu_music_mix(int16_t *out,int frames,int audible,int gain);
@@ -68,7 +74,7 @@ static int load_bank(unsigned p) {
     GuestBank *k=&banks[p];
     unsigned generation=tekken3_guest_generation(p);
     if(k->generation!=generation) {
-        voices[p].group=0;
+        voices[p][CRY_VOICE].group=voices[p][KO_VOICE].group=0;
         free(k->bank);
         memset(k,0,sizeof *k);k->generation=generation;
     }
@@ -146,16 +152,23 @@ static int load_bank(unsigned p) {
 void tekken3_ttt1_voices_tick(void) {
     tekken3_ttt1_sfx_tick();
     for(unsigned p=0;p<2;p++) {
-        if(!guest_active(p) || psx_mod_read_half(0x800ae204)!=8)voices[p].group=0;
+        if(!guest_active(p) || psx_mod_read_half(0x800ae204)!=8)
+            voices[p][CRY_VOICE].group=voices[p][KO_VOICE].group=0;
         else (void)load_bank(p);
         if(telemetry) {
+            /* +0..+16 the cries' voice, +20..+28 the KO voice: commands,
+             * position, end with the echoes (0 when silent). */
             uint32_t dst=telemetry+p*32;
-            GuestVoice *v=&voices[p];
+            GuestVoice *v=&voices[p][CRY_VOICE],*ko=&voices[p][KO_VOICE];
             psx_mod_write_word(dst,v->calls);
             psx_mod_write_word(dst+4,v->id);
             psx_mod_write_word(dst+8,v->group);
             psx_mod_write_word(dst+12,v->pos);
             psx_mod_write_word(dst+16,v->slot<banks[p].sample_count?banks[p].samples[v->slot].frames:0);
+            psx_mod_write_word(dst+20,ko->calls);
+            psx_mod_write_word(dst+24,ko->pos);
+            psx_mod_write_word(dst+28,ko->group && ko->slot<banks[p].sample_count?
+                                      banks[p].samples[ko->slot].frames+2*ECHO_DELAY:0);
         }
     }
     if(telemetry)psx_mod_write_word(telemetry+64,(uint32_t)sfx_gain);
@@ -197,13 +210,17 @@ void __wrap_func_80040C90(CPUState *cpu) {
         }
         unsigned slot=k->group_slot[group][index%k->group_count[group]];
         id=rd32(k->bank+32+slot*16);
-        GuestVoice *v=&voices[p];
+        GuestVoice *v=&voices[p][group==GROUP_KO?KO_VOICE:CRY_VOICE];
         v->id=id;v->slot=slot;v->group=group;v->pos=0;v->calls++;
         fprintf(stderr,"%s voice: P%u command=%04X sample=%u\n",tekken3_guest_name_for(p),p+1,command,id);
         /* Only this actor's character cry is replaced. Shared hit, movement,
          * announcer and opponent calls keep the native sound path. */
         cpu->pc=cpu->gpr[31];return;
     }
+    /* Natives, Devil Jin and natives on TTT1 moves included: Tekken 3 plays
+     * the KO cry and its own echo task. Logged for tools/test_ko_echo.py. */
+    if((cpu->pc==0 || cpu->pc==0x80040c90) && p<2 && (cpu->gpr[6]&65535)>>12==GROUP_KO && !guest_active(p))
+        fprintf(stderr,"TTT1 voices: P%u native KO cry %04X\n",p+1,cpu->gpr[6]&65535);
     __real_func_80040C90(cpu);
 }
 
@@ -220,8 +237,8 @@ void __wrap_spu_render(int16_t *out,int frames) {
         __real_spu_set_host_mix_volume(sfx_gain,embu_music?0:music_gain);
     }
     if(!banks[0].loaded && !banks[1].loaded)return;
-    for(unsigned p=0;p<2;p++) {
-        GuestVoice *v=&voices[p];
+    for(unsigned p=0;p<2;p++)for(unsigned which=CRY_VOICE;which<=KO_VOICE;which++) {
+        GuestVoice *v=&voices[p][which];
         if(!v->group || !banks[p].loaded)continue;
         if(!guest_active(p) || psx_mod_read_half(0x800ae204)!=8){v->group=0;continue;}
         const GuestSample *sample=&banks[p].samples[v->slot];

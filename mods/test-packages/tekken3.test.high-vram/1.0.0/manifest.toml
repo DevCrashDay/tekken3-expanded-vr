@@ -1,0 +1,23 @@
+format_version = 5
+id = "tekken3.test.high-vram"
+version = "1.0.0"
+name = "High VRAM Test"
+author = "Tekken3Recomp"
+description = "Test of the upper VRAM half for Arcade Stages: four 64 x 64 squares at the top of the screen. The first two are read from the upper half (a checkerboard, a rainbow target); the last two show what the PS1 VRAM holds at the same place. Staged only by -DTEKKEN3_HIGH_VRAM_TEST=ON."
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "SLUS-00402"
+exe_sha256 = "fbda8b68e5799dbef4af39a161783bc670c15b0aa0e87dce65e210717da19b8c"
+
+[[feature]]
+id = "high-vram-test"
+name = "High VRAM Test"
+description = "Draws the upper VRAM half's test squares. Restart after changing."
+group = "Visual Enhancements"
+default_enabled = false
+
+[[plugin]]
+feature = "high-vram-test"
+id = "tekken3.high-vram-test"

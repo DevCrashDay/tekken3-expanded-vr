@@ -14,7 +14,7 @@ Kept free of other imports: launcher/setup_backend.py reads it at every start.
 """
 from pathlib import Path
 
-TTT1_IMPORT_VERSION = 2
+TTT1_IMPORT_VERSION = 6
 STAMP = 'import-version.txt'
 
 # Update steps (implemented in tools/ttt1_setup.py, update_step): name ->
@@ -27,6 +27,10 @@ STEPS = {
     'devil-jin': ('workspace', "Devil Jin's model and moves"),
     'panda-tiger': ('workspace', "Panda's and Tiger's portraits"),
     'devil-kick': ('workspace', "Devil's Kick costume (purple model)"),
+    'accessories': ('workspace', "Guests' tails, hair and other swinging pieces"),
+    'tarzan-crash': ('workspace', "Event scripts: the Jacks' Tarzan crash, Heihachi's"),
+    'jin-omen': ('workspace', "Jin's Omen (moves and Devil mark)"),
+    'hand-fists': ('roster', "Guests' fists (Baek, Lee, Armor King, Ganryu)"),
 }
 
 # What brings a roster from version n - 1 to n: its update steps, in order, or
@@ -44,6 +48,20 @@ UPDATES = {
     # 2: Devil's Kick costume takes the game's own model (253, purple Devil)
     # instead of costume 1's (175), whose UVs missed its texture.
     2: ['devil-kick'],
+    # 3: springs of the accessory bones (tails, hair, skirts, coat tails) from
+    # the arcade's table, one .acc per costume (F03).
+    3: ['accessories'],
+    # 4: an event script entry behind the previous one is left out, not the
+    # rest of the script (both engines skip it and go on): the Jacks' Tarzan
+    # win pose (script 490) ends on its crash, Heihachi's 410 / 411 (B50).
+    4: ['tarzan-crash'],
+    # 5: Jin's Omen on his TTT1 moves (Force, then 2,2,3): the partner rule
+    # kept for his moveset, and the Devil mark for his Tekken 3 face.
+    5: ['jin-omen'],
+    # 6: the fist is TTT1's 17th hand pose, not the last: Baek, Lee and Ganryu
+    # have an 18th, Armor King an 18th and a 19th, an open hand after the
+    # progression, and fought with flat hands (convert.hand_steps).
+    6: ['hand-fists'],
 }
 
 

@@ -3,8 +3,7 @@
 
   1. makes a synthetic 3-track disc shaped like Tekken 3's (synthetic_disc.py:
      Mode 2 Form 1/Form 2 sectors with valid EDC/ECC, XA audio, STR video, CD
-     audio, silence), and two texture pack files (.rgba and their PNG, one
-     cropped as forest-hd's background);
+     audio, silence), and two texture pack files (.rgba and their PNG);
   2. puts them into an APK with build_apk.py (reusing the libmain.so of an
      Android build: --build-dir, e.g. the one make_apk.py --bios-test makes),
      the tracks packed (disc_pack.py), or plain with --disc-format bin, and the
@@ -52,8 +51,8 @@ SLICE_MAGIC = b"psxrecomp-apk-slice\n"
 PACK_MAGIC = b"psxrecomp-apk-pack\n"
 RAW = 2352
 # Real texture files of the repository: one shipped as its own PNG, one made
-# from the .rgba (forest-hd's background is a crop of its PNG).
-TEXTURES = ("mods/assets/outfit-menu/xiaoyu-blue", "mods/assets/forest-hd/background")
+# from the .rgba.
+TEXTURES = ("mods/assets/outfit-menu/xiaoyu-blue", "mods/assets/kuma-polar-bear/kuma")
 
 
 def log(message: str) -> None:

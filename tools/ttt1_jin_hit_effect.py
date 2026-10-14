@@ -24,7 +24,7 @@ FOLDER = 'jin-ttt1-hit-effect'
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--ttt1', type=Path, help='ton tektagt.zip non fusionne (World TEG2/VER.C1)')
+    ap.add_argument('--ttt1', type=Path, help='ton tektagt.zip non fusionne (World TEG2/VER.C1, US TEG3/VER.C1 ou VER.B, Japon TEG1/VER.C1)')
     a = ap.parse_args()
     I.sources(a)
     work = I.WORK / KEY

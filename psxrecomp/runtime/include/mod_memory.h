@@ -19,13 +19,15 @@ extern "C" {
 
 /*
  * GPU linked-list tags carry only 24 address bits. Trusted enhancements that
- * need a larger primitive arena use this otherwise-unmapped 1 MiB aperture so
- * their CPU pointers survive the tag truncation. Nothing is mapped until an
- * enhancement explicitly allocates from it.
+ * need a larger primitive arena use this otherwise-unmapped 2 MiB aperture
+ * (the top of the 24-bit space) so their CPU pointers survive the tag
+ * truncation. Nothing is mapped until an enhancement explicitly allocates
+ * from it. 1 MiB was not enough for Tekken 3 Expanded: TTT1 guests (512 KiB),
+ * Arcade Stages (384 KiB), the cinematic engine's floor and sprites.
  */
-#define PSX_MOD_GPU_DMA_APERTURE_BASE 0x00F00000u
-#define PSX_MOD_GPU_DMA_APERTURE_SIZE (1u * 1024u * 1024u)
-#define PSX_MOD_GPU_DMA_GUEST_BASE    0x80F00000u
+#define PSX_MOD_GPU_DMA_APERTURE_BASE 0x00E00000u
+#define PSX_MOD_GPU_DMA_APERTURE_SIZE (2u * 1024u * 1024u)
+#define PSX_MOD_GPU_DMA_GUEST_BASE    0x80E00000u
 
 static inline int psx_mod_gpu_dma_aperture_offset_for(
     uint32_t address, uint32_t width, uint32_t used, uint32_t *offset) {

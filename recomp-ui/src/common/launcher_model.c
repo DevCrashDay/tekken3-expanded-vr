@@ -128,6 +128,7 @@ void launcher_model_init(LauncherModel* m,
         m->has_skip_fmv         = game->has_skip_fmv != 0;
         m->has_turbo_loads      = game->has_turbo_loads != 0;
         m->has_geometry_precision = game->has_geometry_precision != 0;
+        m->has_mouse_cursor     = game->has_mouse_cursor != 0;
         // game->has_fullscreen_toggle is deliberately NOT read: the Fullscreen
         // row is universal (drawn for every console) — see recomp_launcher.h.
         m->has_bios             = game->has_bios != 0;
@@ -1161,6 +1162,19 @@ void launcher_model_toggle_fullscreen(LauncherModel* m) {
     // Binary on/off (0 <-> 1); superseded in the UI by the tri-state cycle
     // above but kept for hosts that drive the field as a bool.
     m->s.fullscreen = m->s.fullscreen ? 0 : 1;
+}
+
+// Host mouse cursor over the game window (has_mouse_cursor hosts): the values
+// are the host's own 0 visible / 1 fullscreen / 2 always / 3 idle.
+void launcher_model_cycle_mouse_cursor(LauncherModel* m) {
+    m->s.mouse_cursor = (clampi(m->s.mouse_cursor, 0, 3) + 1) % 4;
+}
+
+const char* launcher_model_mouse_cursor_label(const LauncherModel* m) {
+    static const char* const kNames[4] = {
+        "Visible", "Hidden in fullscreen", "Always hidden", "Hidden when idle"
+    };
+    return kNames[clampi(m->s.mouse_cursor, 0, 3)];
 }
 
 void launcher_model_cycle_language(LauncherModel* m) {

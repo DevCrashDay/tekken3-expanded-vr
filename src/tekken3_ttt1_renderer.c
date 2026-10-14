@@ -8,6 +8,7 @@
 #include "tekken3_ttt1_assets.h"
 
 extern void __real_func_80036CAC(CPUState *cpu);
+extern void tekken3_cine_near_begin(uint32_t packets);
 
 /* Sonde TEKKEN3_NATIVE_PROBE=<fichier>, chemin NATIF uniquement.
  *
@@ -102,7 +103,12 @@ static void project_beam(const uint32_t *ctrl,uint32_t actor,const int32_t w[3],
  * 8 images, avance a chaque image du jeu (compteur d'images de l'acteur). */
 #define SPARKS 4
 #define SPARK_LIFE 8
-static struct { int32_t x,y,z; int age; unsigned turn; } sparks[2][SPARKS];
+/* Nees eteintes : a zero, quatre etincelles "vivantes" en (0,0,0), entre
+ * les deux combattants, au premier combat apres le demarrage (issue #86) ;
+ * elles ne vieillissent qu'avec l'image de l'acteur, que le moteur de
+ * cinematiques tient : une etoile en bas de l'ecran toute la scene, et des
+ * traits a travers l'ecran quand la camera passait pres de l'origine. */
+static struct { int32_t x,y,z; int age; unsigned turn; } sparks[2][SPARKS]={[0 ... 1]={[0 ... SPARKS-1]={.age=SPARK_LIFE}}};
 static void tick_sparks(unsigned p,const int32_t *tip) {
     static int last[2]={-1,-1}; static unsigned floor_frames[2];
     uint32_t actor=0x800a9228+p*0x188c;
@@ -289,6 +295,9 @@ void __wrap_func_80036CAC(CPUState *cpu) {
         uint32_t m1=psx_mod_read_word(0x8009bd28u), m2=psx_mod_read_word(0x8009bd2cu);
         int mine=nlog && nlogged<400 && m1 && in[0]>=m1 && in[0]<m1+27*56+24;
         if(mine) { fprintf(stderr,"native log: entree ligne %u (a0=%08X)\n",(in[0]-m1-16)/56,in[0]); fflush(stderr); }
+        /* Une cinematique ecarte a la fin de la partie ses paquets derriere la
+         * camera (src/tekken3_cine_near.c) : ils commencent en a1. */
+        if(pc0==0 || pc0==0x80036cacu) tekken3_cine_near_begin(in[1]);
         __real_func_80036CAC(cpu);
         /* Apres la tete (ligne 19) : rayon et lame du joueur dessine. Ses
          * deux appels (0x80037A00, 0x80037A30) lisent la ligne et les paquets

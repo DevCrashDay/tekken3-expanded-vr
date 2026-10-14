@@ -16,7 +16,7 @@ id = "julia-blue"
 name = "Julia Blue Turquoise"
 description = "Adds Julia Blue Turquoise to Julia's L1 gallery alongside her original outfits. Restart after toggling this package."
 group = "Character Skins"
-default_enabled = true
+default_enabled = false
 
 [[plugin]]
 feature = "julia-blue"

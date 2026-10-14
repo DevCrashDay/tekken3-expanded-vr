@@ -2433,6 +2433,16 @@ void draw_display_controls(LauncherModel* m, const LauncherTheme& th) {
             launcher_model_cycle_fullscreen(m);
         ImGui::PopID();
     }
+    if (m->has_mouse_cursor && !g_phone_layout) {
+        row_label("Mouse cursor", th);
+        ImGui::PushID("mouse_cursor");
+        if (ImGui::Button(launcher_model_mouse_cursor_label(m), ImVec2(px(180), px(30))))
+            launcher_model_cycle_mouse_cursor(m);
+        ImGui::PopID();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("Mouse pointer over the game window.\n"
+                              "Hidden when idle: after 3 seconds without moving the mouse.");
+    }
     if (m->num_display_layouts > 0) {
         row_label("Screen layout", th);
         ImGui::PushID("screen_layout");

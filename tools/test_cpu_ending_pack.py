@@ -82,14 +82,16 @@ def main():
     build = L.ROOT / a.build
     # The game's own name in its log ("Armor King combat: ..."); the pack file keeps the key's form.
     name = {'armorking': 'Armor King', 'pjack': 'P. Jack'}.get(a.guest, a.guest.capitalize())
-    if a.case != 'loader' and not (build / 'mods/ttt-cinematics/cinematics.txt').is_file():
+    # Prepared: the engine's trigger table (no ending packs at all) or the old way's sections.
+    if a.case != 'loader' and not any((build / f'mods/ttt-cinematics/{n}').is_file() for n in ('triggers.txt', 'cinematics.txt')):
         sys.exit(f'{build}/mods/ttt-cinematics is not prepared (tools/ttt_cinematics.py)')
     if a.case == 'p1': sys.exit(player_one(a, build, name))
     # King: a Tekken 3 native (id 3) the CPU plays on his TTT1 moveset
     # (TEKKEN3_NATIVE_MOVES=1, every native on TTT1); his pack is King-TTT1.
     native = a.guest == 'king'
     s = L.Session(guest='armorking' if native else a.guest, build=build,
-                  env={'TEKKEN3_GUEST_P2': 'armorking' if native else a.guest, 'TEKKEN3_NATIVE_MOVES': '1' if native else '0'})
+                  env={'TEKKEN3_GUEST_P2': 'armorking' if native else a.guest, 'TEKKEN3_NATIVE_MOVES': '1' if native else '0'},
+                  line=2 if a.mode == 'team' else 0)     # booted without save states (Windows): Team Battle from the menu
     if native: s.cid_p2 = 3
     pack_file = s.run / f'mods/ttt1/{a.guest.capitalize()}-TTT1-combat.jmv'
     pack = Pack(pack_file.read_bytes())
@@ -100,7 +102,7 @@ def main():
     failures, samples = [], []
     try:
         if a.mode == 'team':
-            s.write(MODE, 2); s.write(PHASE, 0, 2); s.write(STATE, 10, 2)
+            if not s.boot: s.write(MODE, 2); s.write(PHASE, 0, 2); s.write(STATE, 10, 2)
             time.sleep(3)
             s.press(0xbfff); time.sleep(.8)                         # a team of one
             for _ in range(6):
@@ -114,7 +116,9 @@ def main():
                 if s.value(0x80118668) == 9: break
                 s.press(0xff7f)
             s.press(0x7fff)
-        s.wait(lambda: s.value(STATE) == 11, 'no loading screen', 15)
+        # Team Battle from the menu (no save state) has no loading screen: the
+        # FIGHT 1 screen (state 8, phase 3) comes straight after the draw.
+        s.wait(lambda: s.value(STATE) in (8, 11), 'no loading screen', 15)
         if a.mode == 'arcade': s.write(LIST + 4, s.cid_p2, 1); s.write(LIST + 5, 0, 1)
         # A native: stage 1's opponent as well, loaded through this loading
         # screen (stage 2 loads in the fight, without one, where no moveset is
@@ -125,7 +129,7 @@ def main():
         while time.monotonic() - t0 < 300:
             if s.process.poll() is not None: raise RuntimeError('the game exited')
             state, phase = s.value(STATE), s.value(PHASE, 2)
-            if state == 11 and a.mode != 'arcade' and start is None:
+            if (state == 11 or state == 8 and phase <= 3) and a.mode != 'arcade' and start is None:
                 s.write(CPU_FIGHTER, s.cid_p2, 2); s.write(CPU_COSTUME, 0, 2)
                 if a.mode == 'team': s.write(CPU_TEAM, s.cid_p2 * 4, 1)
             elif state == 8 and phase >= 6 and s.actor(1)[2] != s.cid_p2 and s.value(P2 + 0x3F4) > 0xFFFF:

@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -190,6 +191,49 @@ static void test_master_volume_round_trip() {
     fs::remove(r);
 }
 
+/* GH#21 / GH#50: [video] hide_mouse_cursor, now set from the launcher's
+ * Mouse cursor row. All four values survive a launcher save; an install that
+ * already has the key keeps it, a fresh one gets "idle". */
+static void test_hide_mouse_cursor_round_trip() {
+    static const char* const kNames[4] = { "off", "fullscreen", "always", "idle" };
+    for (int v = 0; v < 4; ++v) {
+        PSXRecompV4::UserSettings out;
+        out.hide_mouse_cursor = v;  out.has_hide_mouse_cursor = true;
+        fs::path p = fs::temp_directory_path() / "psxrecomp_cursor_roundtrip.toml";
+        check(PSXRecompV4::save_user_settings(p, out), "cursor save writes");
+        std::ifstream f(p);
+        std::string body((std::istreambuf_iterator<char>(f)), {});
+        f.close();
+        check(body.find(std::string("hide_mouse_cursor  = \"") + kNames[v] + "\"")
+                  != std::string::npos,
+              "hide_mouse_cursor is written by name");
+        auto back = PSXRecompV4::load_user_settings(p);
+        check(back.has_hide_mouse_cursor && back.hide_mouse_cursor == v,
+              "hide_mouse_cursor survives a save/load round trip");
+        fs::remove(p);
+    }
+
+    fs::path q = write_temp("psxrecomp_cursor_bool.toml",
+                            "[video]\nhide_mouse_cursor = true\n");
+    auto on = PSXRecompV4::load_user_settings(q);
+    check(on.has_hide_mouse_cursor && on.hide_mouse_cursor == 2,
+          "hide_mouse_cursor = true reads as \"always\"");
+    fs::remove(q);
+
+    fs::path r = write_temp("psxrecomp_cursor_off.toml",
+                            "[video]\nhide_mouse_cursor = \"off\"\n");
+    auto off = PSXRecompV4::load_user_settings(r);
+    check(off.has_hide_mouse_cursor && off.hide_mouse_cursor == 0,
+          "an existing \"off\" is kept");
+    fs::remove(r);
+
+    fs::path s = write_temp("psxrecomp_cursor_absent.toml", "[video]\nsupersampling = 2\n");
+    auto none = PSXRecompV4::load_user_settings(s);
+    check(!none.has_hide_mouse_cursor && none.hide_mouse_cursor == 3,
+          "absent hide_mouse_cursor defaults to \"idle\"");
+    fs::remove(s);
+}
+
 int main() {
     test_defaults_off();
     test_game_toml_opt_in();
@@ -198,6 +242,7 @@ int main() {
     test_user_settings_absent_key();
     test_user_settings_round_trip();
     test_master_volume_round_trip();
+    test_hide_mouse_cursor_round_trip();
 
     if (failures) {
         std::fprintf(stderr, "video_enhancement_settings_test: %d failure(s)\n",

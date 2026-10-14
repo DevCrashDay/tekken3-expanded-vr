@@ -103,6 +103,25 @@ def character_requirement(code, moveset, body):
     return None
 
 
+# Codes 0x64..0x84: the rule holds when the tag partner has moveset code - 0x64.
+# With no partner in PS1 combat these are dropped, except the ones granted
+# here (moveset -> partner taken as always present, and the aliases of what
+# that opens). Jin's Omen: Force (b+1+2) then 2,2,3, with Heihachi (13) as
+# partner; the stance and its moves (aliases 0x312..0x330) hang off that
+# single entry. Their rules on the opponent (more damage and less recoil
+# against Kazuya and Jun, deflected by Jin, Heihachi and Devil) go to DYNC
+# with OPPONENT_APPLIED: the runtime tests the opponent for those rows only
+# (src/tekken3_ttt1_combat.c); the other packs' rows stay as they were.
+GRANTED_PARTNERS = {9: (13, range(0x312, 0x331))}
+# DYNC row flag (in the opponent word): the runtime applies the condition.
+OPPONENT_APPLIED = 0x100
+
+
+def partner_requirement(code):
+    """Codes 0x64..0x84: the partner's moveset, or None."""
+    return code - 0x64 if 0x64 <= code < 0x85 else None
+
+
 def cancel_rows(ram,pointer,stack=()):
     if pointer in stack or len(stack)>8:raise ValueError('Recursive cancel list')
     for k in range(1024):
@@ -168,11 +187,15 @@ def convert(ram, bank, records, moveset, body, limb_map, native_exe=None, graft=
     if hashlib.sha256(native_exe).hexdigest()!=NATIVE_EXE_SHA:
         raise ValueError('disc/SLUS_004.02 is not the Tekken 3 USA executable')
     native_exe=native_exe[0x800:]
-    host_requirement=lambda code:character_requirement(code,moveset,body)
+    partner,granted_aliases=GRANTED_PARTNERS.get(moveset,(None,())) if graft is None else (None,())
+    host_requirement=lambda code:True if partner is not None and partner_requirement(code)==partner \
+        else character_requirement(code,moveset,body)
     requirement=host_requirement
     solo.TRUNCATED_EVENTS.clear()
+    solo.SKIPPED_EVENTS.clear()
     solo.SFX_INDEXES.clear()
     aliases = host_aliases = struct.unpack_from('<5515I', ram, 0x2a7350)
+    granted_records={aliases[a] for a in granted_aliases}
     addresses = {x['address'] for x in records}
     # Common locomotion supplies crouching, walking and turning for the donor.
     addresses.update(a for a in aliases[56:344] if a != 0x8009374c)
@@ -358,7 +381,7 @@ def convert(ram, bank, records, moveset, body, limb_map, native_exe=None, graft=
                 skipped['other_character_rule']+=1;continue
             if cmd<0x8000 and cmd&0x4000:
                 skipped['solo_excluded_tag_input']+=1;continue
-            if 0x64<=req&255<0x85 or 0xa7<=req&255<0xc9 or kind&0x3f80 or (req>>8)&127 in (88,89,90,91,92):
+            if (0x64<=req&255<0x85 and owner is not True) or 0xa7<=req&255<0xc9 or kind&0x3f80 or (req>>8)&127 in (88,89,90,91,92):
                 skipped['solo_excluded_partner_transition']+=1;continue
             if (req>>8)&127==95:
                 # TTT's round-defeat signal; the PS1 round controller enters
@@ -394,7 +417,7 @@ def convert(ram, bank, records, moveset, body, limb_map, native_exe=None, graft=
                 param|=0x4000
             # Bit 15/14 became bit 7/6 in the PS1 transition byte.
             if opponent is not None:
-                opponent_rules.append((i,emitted,opponent))
+                opponent_rules.append((i,emitted,opponent|(OPPONENT_APPLIED if current[0] in granted_records else 0)))
             yield struct.pack('<4H4B',cmd,condition<<8,param,dest,transition,window>>8,end&255,end>>8)
             emitted += 1
 
@@ -563,6 +586,7 @@ def convert(ram, bank, records, moveset, body, limb_map, native_exe=None, graft=
                 native_entry_points=len(native_aliases),native_fallback_templates=[],
                 source_default_reaction='8009374c' if 0x8009374c in indices else None,
                 truncated_event_scripts=dict(solo.TRUNCATED_EVENTS),
+                skipped_event_entries={i:sorted(k) for i,k in sorted(solo.SKIPPED_EVENTS.items())},
                 sound_indexes=sorted(solo.SFX_INDEXES | set(solo.ENGINE_SOUNDS)),
                 limits=['Native fight camera replaces TTT1 camera scripts',
                         'Accessories keep a rigid attachment, without secondary physics'])

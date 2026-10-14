@@ -16,7 +16,7 @@ id = "heihachi-tiger-coat"
 name = "Heihachi Tiger Coat"
 description = "Adds Heihachi Tiger Coat to Heihachi's L1 gallery alongside his original outfits. Restart after toggling this package."
 group = "Character Skins"
-default_enabled = true
+default_enabled = false
 
 [[plugin]]
 feature = "heihachi-tiger-coat"

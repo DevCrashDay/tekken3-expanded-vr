@@ -32,7 +32,9 @@ OPTIONAL = ('TTT1-voices.juv',           # Tetsujin ne parle pas
             # costumes 2 (Pied) et 3 (Start)
             *(f'TTT1-arcade-P{c}.{e}' for c in (2, 3) for e in ('3dm', 'relocs', 'tim')),
             # expressions du visage (tools/ttt1_import.py faces()) : pas chez Kunimitsu, les Jacks...
-            *(f'TTT1-arcade-P{c}.face' for c in (1, 2, 3)))
+            *(f'TTT1-arcade-P{c}.face' for c in (1, 2, 3)),
+            # ressorts des accessoires (tools/ttt1/accessories.py) : pas chez Tetsujin, Bruce, les Jacks...
+            *(f'TTT1-arcade-P{c}.acc' for c in (1, 2, 3)))
 
 
 # Carte MOVESET du sélecteur (src/tekken3_native_moves.c) : les natifs de Tekken 3 sur
@@ -108,6 +110,11 @@ def main(stamp=False):
     moves = sorted((WORK / 'devil-jin/guest').glob('DevilJin-TTT1-*'))
     for p in egg + moves: shutil.copyfile(p, OUT / p.name)
     if egg: print('Devil Jin: model and name staged' + (', with his moves' if moves else ''))
+    # Jin's Omen (tools/ttt1_jin_omen_mark.py): the Devil mark painted on his
+    # Tekken 3 face while an Omen move shows it.
+    omen = sorted((WORK / 'jin-omen/guest').glob('Jin-TTT1-omen-mark.bin'))
+    for p in omen: shutil.copyfile(p, OUT / p.name)
+    if omen: print("Jin's Omen: Devil mark staged")
     # Panda and Tiger (tools/ttt1_panda_tiger.py): Kuma's and Eddy's faces
     # once those costumes are confirmed.
     faces = sorted((WORK / 'panda-tiger/guest').glob('*-T3-ui.jui'))

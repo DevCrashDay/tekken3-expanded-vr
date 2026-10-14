@@ -47,6 +47,10 @@ void sw_set_semi_transparency(int enabled, int mode);
 void sw_set_mask_bits(int set_bit, int check_bit);
 void sw_set_texture_window(uint32_t raw);
 void sw_set_color_modulation(int r, int g, int b, int raw_texture);
+/* Opt-in upper VRAM half (1024 x 512, VRAM y 512..1023): the following
+ * textured primitives read their texels (tex_high) and/or CLUT (clut_high)
+ * there, at the same y & 511. high = NULL or both flags 0 is the default. */
+void sw_set_high_vram(const uint16_t *high, int tex_high, int clut_high);
 
 /* Drawing primitives — called from gpu.c command processing */
 void sw_fill_rect(int x, int y, int w, int h, uint16_t color);

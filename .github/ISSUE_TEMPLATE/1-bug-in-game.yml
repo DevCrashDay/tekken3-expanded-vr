@@ -1,0 +1,107 @@
+name: Bug in game
+description: Something wrong while playing (moves, models, sounds, menus, modes, crash).
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. A bug is fixed quickly when it can be reproduced, so the **steps** below matter most.
+        A short video or screenshot helps a lot but is not required.
+
+        **Do not attach game files.** Never upload your disc image, your ROM zips, or anything from the `disc`, `generated` or `workspace` folders. Logs and screenshots only.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before opening
+      options:
+        - label: I searched the open issues and this bug is not already reported.
+          required: true
+  - type: dropdown
+    id: version
+    attributes:
+      label: Version
+      description: The release you downloaded, or "git clone" if you build from the repository.
+      options:
+        - v1.2.1 (latest release)
+        - v1.2.0
+        - v1.1.x
+        - git clone of main (give the commit below)
+        - I don't know
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - macOS
+        - Steam Deck (Proton)
+        - Android
+        - Other (say which below)
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Game mode
+      description: Where it happens. Pick the first one if it happens everywhere.
+      options:
+        - Every mode
+        - Arcade
+        - VS Battle
+        - Team Battle
+        - Time Attack
+        - Survival
+        - Practice
+        - Tekken Force
+        - Tekken Ball
+        - Theater / TTT Cinematics
+        - Embu (attract demo)
+        - Character select, menus, launcher
+    validations:
+      required: true
+  - type: input
+    id: characters
+    attributes:
+      label: Characters and movesets
+      description: Who is on screen, which side, and which moveset (T3 or TTT) for each. CPU or human.
+      placeholder: "P1 Jin (TTT moveset) vs P2 CPU Kazuya, costume 2"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How it happens
+      description: What you did, step by step, from a point anyone can reach. Buttons pressed, distance, timing, what the opponent was doing. The more exact, the faster the fix.
+      placeholder: |
+        1. VS Battle, P1 Jin (TTT), P2 Kazuya.
+        2. Opponent is back-turned after a whiffed move.
+        3. Press d/f+2 immediately.
+        4. The hit lands but the opponent does not fall.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen instead
+      description: How the original game (Tekken 3 or Tekken Tag Tournament) behaves in the same situation, if you know.
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: Video or screenshot
+      description: Drag a file here or paste a link (YouTube, etc.). Not required, but it often settles the question in one look.
+  - type: textarea
+    id: log
+    attributes:
+      label: Console output
+      description: If the game printed something in its console window around the bug (lines like `Jin combat:` or `[FPS]`), paste it here. On Android, the output of `adb logcat -d -s psxrecomp`.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Options you changed (CPU moveset, difficulty, progression), add-ons enabled, commit if you build from git.

@@ -26,7 +26,7 @@ echo "Tekken 3 Expanded: first setup. Drag each file onto this window, then pres
 ask() { local answer; read -r -p "$1: " answer; answer=${answer%\'}; answer=${answer#\'}; answer=${answer%\ }; printf '%s' "${answer//\\ / }"; }
 disc=$(ask "Your Tekken 3 USA disc (.cue)")
 ttt1=$(ask "Your TTT1 arcade ROM (tektagt.zip)")
-tekken3=$(ask "Optional, your Tekken 3 arcade ROM (tekken3.zip) for the arcade difficulty levels; Return to skip")
+tekken3=$(ask "Optional, your Tekken 3 arcade ROM (tekken3.zip) for the arcade difficulty levels and arcade stages; Return to skip")
 read -r -p "Add Jin's red lightning? [y/N] " jin
 args=(--text --play --disc "$disc" --ttt1 "$ttt1")
 [ -n "$tekken3" ] && args+=(--tekken3 "$tekken3")

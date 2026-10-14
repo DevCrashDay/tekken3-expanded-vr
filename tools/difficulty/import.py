@@ -84,7 +84,8 @@ def choose(prompt, pattern):
 
 def program(game, zip_path):
     """The game program as the board unpacks it to 80010000 at boot."""
-    regions = [r for r in json.loads(probe.MANIFEST.read_text())['sets'][game]['regions']
+    name = probe.ttt_set(zip_path) if game == 'tektagt' else game    # World or US C1
+    regions = [r for r in json.loads(probe.MANIFEST.read_text())['sets'][name]['regions']
                if r['name'] == 'maincpu:rom']
     try: main = probe.reconstruct(zip_path, dict(regions=regions))[0]['maincpu:rom']
     except probe.ProbeError as e: raise SystemExit(f'{zip_path.name} : {e}')

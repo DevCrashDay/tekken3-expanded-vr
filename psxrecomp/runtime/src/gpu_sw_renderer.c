@@ -130,6 +130,22 @@ static inline uint16_t vram_get(int x, int y) {
     return g_vram[y * VRAM_WIDTH + x];
 }
 
+/* Texel and CLUT sources of the current primitive: canonical VRAM, or the
+ * opt-in upper half (y 512..1023, see sw_set_high_vram) for a mod's own
+ * primitive. Both stay g_vram unless a mod enabled that half. */
+static const uint16_t *g_tex_src, *g_clut_src;
+
+static inline uint16_t src_get(const uint16_t *src, int x, int y) {
+    x &= (VRAM_WIDTH - 1);
+    y &= (VRAM_HEIGHT - 1);
+    return src[y * VRAM_WIDTH + x];
+}
+
+void sw_set_high_vram(const uint16_t *high, int tex_high, int clut_high) {
+    g_tex_src  = tex_high && high ? high : g_vram;
+    g_clut_src = clut_high && high ? high : g_vram;
+}
+
 /* ------------------------------------------------------------------ */
 /* Render target — selects native VRAM or the hi-res mirror.          */
 /*                                                                    */
@@ -383,22 +399,22 @@ static uint16_t texel_fetch(int u, int v, uint16_t texpage,
     case 0: { /* 4-bit CLUT */
         int vram_x = tpx + (u / 4);
         int vram_y = tpy + v;
-        uint16_t texel_word = vram_get(vram_x, vram_y);
+        uint16_t texel_word = src_get(g_tex_src, vram_x, vram_y);
         int shift = (u & 3) * 4;
         int index = (texel_word >> shift) & 0xF;
-        return vram_get(clut_x + index, clut_y);
+        return src_get(g_clut_src, clut_x + index, clut_y);
     }
     case 1: { /* 8-bit CLUT */
         int vram_x = tpx + (u / 2);
         int vram_y = tpy + v;
-        uint16_t texel_word = vram_get(vram_x, vram_y);
+        uint16_t texel_word = src_get(g_tex_src, vram_x, vram_y);
         int shift = (u & 1) * 8;
         int index = (texel_word >> shift) & 0xFF;
-        return vram_get(clut_x + index, clut_y);
+        return src_get(g_clut_src, clut_x + index, clut_y);
     }
     case 2:   /* 15-bit direct */
     case 3: {
-        return vram_get(tpx + u, tpy + v);
+        return src_get(g_tex_src, tpx + u, tpy + v);
     }
     default:
         return 0;
@@ -489,6 +505,7 @@ static void sw_rect_uv_limits(int u0, int v0, int u1, int v1) {
 
 void sw_renderer_init(uint16_t *vram) {
     g_vram = vram;
+    g_tex_src = g_clut_src = vram;
     g_clip_x1 = 0;
     g_clip_y1 = 0;
     g_clip_x2 = VRAM_WIDTH - 1;

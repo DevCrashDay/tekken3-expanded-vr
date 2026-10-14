@@ -412,6 +412,13 @@ static GLuint        s_raw_tex = 0, s_raw_fbo = 0;
 static GLuint        s_up_tex = 0;
 /* copy_rect staging (hr-sized RGBA8). */
 static GLuint        s_scratch_tex = 0, s_scratch_fbo = 0;
+/* Opt-in upper VRAM half (gpu_high_vram_pixels): a native R16UI copy of the
+ * mod's CPU pixels, sampled by the textured program only when it was built
+ * with it (s_hi_prog), i.e. when a mod enabled the half before GL init. The
+ * flags say whether the current primitive reads its texels / CLUT there. */
+static GLuint        s_hi_tex = 0;
+static int           s_hi_prog = 0, s_hi_tex_on = 0, s_hi_clut_on = 0;
+#define HI_TEX_UNIT  (3 + T3_SKIN_COUNT)
 
 /* Programs. */
 static GLuint s_geo_prog = 0, s_geo_vao = 0, s_geo_vbo = 0;
@@ -1486,6 +1493,31 @@ static const char *STENCIL_FS =
     "void main(){ vec4 c=texelFetch(u_src,ivec2(gl_FragCoord.xy),0);\n"
     "  if(c.a<0.75) discard; frag=vec4(0.0); }\n";
 
+/* TEX_FS with the opt-in upper VRAM half: VRAM y 512..1023 (a mod's own
+ * primitives, see glb_set_high_vram) is read from u_vram_hi. Malloc'd, or
+ * NULL if TEX_FS no longer has the expected vram_at(). */
+static char *tex_fs_with_high_vram(void) {
+    static const char kStock[] =
+        "int vram_at(int x, int y){\n"
+        "  return int(texelFetch(u_vram, ivec2(x & 1023, y & 511), 0).r);\n"
+        "}\n";
+    static const char kHigh[] =
+        "uniform usampler2D u_vram_hi;\n"
+        "int vram_at(int x, int y){\n"
+        "  ivec2 p = ivec2(x & 1023, y & 511);\n"
+        "  return int(((y & 512) != 0 ? texelFetch(u_vram_hi, p, 0) : texelFetch(u_vram, p, 0)).r);\n"
+        "}\n";
+    const char *at = strstr(TEX_FS, kStock);
+    if (!at) return NULL;
+    size_t head = (size_t)(at - TEX_FS), tail = strlen(at + sizeof kStock - 1);
+    char *out = (char *)malloc(head + sizeof kHigh + tail);
+    if (!out) return NULL;
+    memcpy(out, TEX_FS, head);
+    memcpy(out + head, kHigh, sizeof kHigh - 1);
+    memcpy(out + head + sizeof kHigh - 1, at + sizeof kStock - 1, tail + 1);
+    return out;
+}
+
 /* The GLSL ES 3.00 form of one of this file's "#version 330" shaders.
  * Returns malloc'd source, or NULL to use `src` as it is. */
 static char *gles_shader_source(GLenum type, const char *src) {
@@ -1813,13 +1845,14 @@ static void flush_pack_if_sampling(int tpage_x, int tpage_y, int depth,
                                    int clut_x, int clut_y) {
     if (!s_pack_dirty.set) return;
     int page_w = depth == 0 ? 64 : depth == 1 ? 128 : 256;  /* VRAM columns */
-    if (rect_intersects(&s_pack_dirty, tpage_x, tpage_y,
+    /* The upper half is never drawn into: nothing to pack for it. */
+    if (!s_hi_tex_on && rect_intersects(&s_pack_dirty, tpage_x, tpage_y,
                         tpage_x + page_w - 1, tpage_y + 255)) {
         flush_flat_batch();
         flush_tex_batch();   /* queued draws are part of s_pack_dirty — realise them before packing */
         pack_flush(); return;
     }
-    if (depth <= 1) {
+    if (depth <= 1 && !s_hi_clut_on) {
         int n = depth == 0 ? 16 : 256;
         if (rect_intersects(&s_pack_dirty, clut_x, clut_y, clut_x + n - 1, clut_y)) {
             flush_flat_batch();
@@ -1827,6 +1860,45 @@ static void flush_pack_if_sampling(int tpage_x, int tpage_y, int depth,
             pack_flush();
         }
     }
+}
+
+/* ---- opt-in upper VRAM half ----------------------------------------------
+ * The mod's CPU pixels are authoritative; written rectangles are copied into
+ * s_hi_tex before the next textured batch samples it. */
+static DirtyRect s_hi_dirty;
+static GLint     s_uVramHi = -1;
+static GLuint make_tex(GLenum internal, int w, int h, GLenum fmt, GLenum type);
+
+static void hi_bind(void) {
+    const uint16_t *hi = gpu_high_vram_pixels();
+    if (!hi) return;
+    if (!s_hi_tex) {
+        s_hi_tex = make_tex(PSXGL_R16UI, VRAM_W, VRAM_H, PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT);
+        rect_add(&s_hi_dirty, 0, 0, VRAM_W - 1, VRAM_H - 1);
+    }
+    p_glActiveTexture(PSXGL_TEXTURE0 + HI_TEX_UNIT);
+    glBindTexture(GL_TEXTURE_2D, s_hi_tex);
+    if (s_hi_dirty.set) {
+        int x = s_hi_dirty.x0, y = s_hi_dirty.y0;
+        glPixelStorei(PSXGL_UNPACK_ROW_LENGTH, VRAM_W);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, s_hi_dirty.x1 - x + 1, s_hi_dirty.y1 - y + 1,
+                        PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT, hi + (size_t)y * VRAM_W + x);
+        glPixelStorei(PSXGL_UNPACK_ROW_LENGTH, 0);
+        s_hi_dirty.set = 0;
+    }
+    p_glUniform1i(s_uVramHi, HI_TEX_UNIT);
+}
+
+static int glb_set_high_vram(const uint16_t *high, int tex_high, int clut_high) {
+    sw_set_high_vram(high, tex_high, clut_high);     /* pre-context and dual-raster draws */
+    s_hi_tex_on = tex_high && high;
+    s_hi_clut_on = clut_high && high;
+    return !(s_hi_tex_on || s_hi_clut_on) || !s_raster_ok || s_hi_prog;
+}
+
+static void glb_high_vram_written(int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    rect_add(&s_hi_dirty, x, y, x + w - 1, y + h - 1);
 }
 
 /* ---- coherency: GPU -> CPU readback -------------------------------------- */
@@ -2175,6 +2247,7 @@ static void flush_tex_batch(void) {
 
     hr_begin(1);
     p_glUseProgram(s_tex_prog);
+    if (s_hi_prog) hi_bind();
     p_glActiveTexture(PSXGL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, s_raw_tex);
     p_glUniform1i(s_uVram, 0);
@@ -2438,7 +2511,7 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
     flush_pack_if_sampling(base_x, base_y, depth, clut_x, clut_y);  /* flushes batch iff it must pack */
     mark_prim_dirty(xs, ys, 3, 1 /* textured */);
     const HdTextureTile *hd = NULL;
-    if (!s_tw_mask_x && !s_tw_mask_y && semi < 0) {
+    if (!s_tw_mask_x && !s_tw_mask_y && semi < 0 && !s_hi_tex_on && !s_hi_clut_on) {
         hd = hd_map_find(&s_hd_map, s_vram, base_x, base_y, depth,
                          clut_x, clut_y, original_us, original_vs);
         for (int i = 0; i < HD_SKIN_COUNT && !hd; ++i)
@@ -2514,8 +2587,9 @@ static void gpu_textured_triangle(const int *xs, const int *ys,
             vp[1] = s_pc_valid ? s_pc_y[i] : (float)ys[i];
             vp[2] = (float)us[i];   vp[3] = (float)vs[i];
             vp[4] = col[i*3+0];     vp[5] = col[i*3+1];     vp[6] = col[i*3+2];   vp[7] = 1.0f;
-            vp[8]  = (float)base_x;  vp[9]  = (float)base_y;        /* a_tpage  */
-            vp[10] = (float)clut_x;  vp[11] = (float)clut_y;        /* a_clut   */
+            /* y >= 512 selects the upper half in the s_hi_prog shader. */
+            vp[8]  = (float)base_x;  vp[9]  = (float)(base_y + (s_hi_tex_on ? 512 : 0));  /* a_tpage */
+            vp[10] = (float)clut_x;  vp[11] = (float)(clut_y + (s_hi_clut_on ? 512 : 0)); /* a_clut  */
             vp[12] = (float)depth;   vp[13] = (float)rawtex;        /* a_depth, a_raw */
             vp[14] = (float)lim[0];  vp[15] = (float)lim[1];        /* a_limits */
             vp[16] = (float)lim[2];  vp[17] = (float)lim[3];
@@ -3120,7 +3194,14 @@ static int init_gpu_raster(void) {
     s_scale = s_req_scale;
 
     s_geo_prog  = build_program(GEO_VS, GEO_FS);
-    s_tex_prog  = build_program_ex(TEX_VS, TEX_FS, 1);
+    /* With the opt-in upper VRAM half, vram_at() reads y 512..1023 from
+     * u_vram_hi; without it the program is TEX_FS as it always was. */
+    char *tex_fs_hi = gpu_high_vram_pixels() ? tex_fs_with_high_vram() : NULL;
+    s_tex_prog  = build_program_ex(TEX_VS, tex_fs_hi ? tex_fs_hi : TEX_FS, 1);
+    s_hi_prog   = s_tex_prog && tex_fs_hi;
+    free(tex_fs_hi);
+    s_hi_tex    = 0;                     /* a new context makes a new one */
+    s_hi_dirty.set = 0;
     s_blit_prog = build_program(BLIT_VS, BLIT_FS);
     s_pack_prog = build_program(PACK_VS, PACK_FS);
     s_stencil_prog = build_program(PACK_VS, STENCIL_FS);
@@ -3159,6 +3240,7 @@ static int init_gpu_raster(void) {
     if (!make_fbo(&s_scratch_fbo, s_scratch_tex, 0)) return 0;
 
     s_uVram  = p_glGetUniformLocation(s_tex_prog, "u_vram");
+    s_uVramHi = s_hi_prog ? p_glGetUniformLocation(s_tex_prog, "u_vram_hi") : -1;
     s_uHdBackground = p_glGetUniformLocation(s_tex_prog, "u_hd_background");
     s_uHdGround = p_glGetUniformLocation(s_tex_prog, "u_hd_ground");
     s_uHdSkin[0] = p_glGetUniformLocation(s_tex_prog, "u_hd_skin");
@@ -5229,6 +5311,8 @@ static const GpuRenderBackend GL_BACKEND = {
     .wide_set_sidecar_complete = glb_wide_set_sidecar_complete,
     .render_wide_display = glb_render_wide_display,
     .wide_dump_full = glb_wide_dump_full,
+    .set_high_vram = glb_set_high_vram,
+    .high_vram_written = glb_high_vram_written,
 };
 
 const GpuRenderBackend *gl_backend_get(void) { return &GL_BACKEND; }

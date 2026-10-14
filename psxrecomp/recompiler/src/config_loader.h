@@ -1141,10 +1141,10 @@ struct UserSettings {
     // in-game Alt+Enter / Cmd+Ctrl+F hotkey toggles live between windowed and
     // whichever of these is configured.
     bool has_fullscreen     = false; int  fullscreen     = 0;
-    // [video] hide_mouse_cursor: "off" (default, 0) / "fullscreen" (1: hidden
-    // only while the window is fullscreen) / "always" (2) / "idle" (3: hidden
-    // after ~3 s without mouse movement, back on the next movement).
-    bool has_hide_mouse_cursor = false; int hide_mouse_cursor = 0;
+    // [video] hide_mouse_cursor: "off" (0) / "fullscreen" (1: hidden only
+    // while the window is fullscreen) / "always" (2) / "idle" (3, default:
+    // hidden after ~3 s without mouse movement, back on the next movement).
+    bool has_hide_mouse_cursor = false; int hide_mouse_cursor = 3;
     // Low-latency present knobs. low_latency_input re-samples the pad after the
     // wall-clock pacer (just before present) so the next CPU frame reads fresh
     // input instead of input ~one frame stale (the dominant input->photon cost

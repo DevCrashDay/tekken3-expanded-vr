@@ -65,7 +65,7 @@ local function hold(k, v)
 end
 local step, step_at = 0, 0
 local function sample()
-    for bone = 18, 22 do
+    for bone = 18, 23 do
         local a = P1 + 0xa58 + 80 * bone
         local m = {}
         for i = 0, 8 do m[#m + 1] = s16(space:read_u16(a + 2 * i)) end

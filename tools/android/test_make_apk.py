@@ -407,7 +407,7 @@ class MakeApkTests(unittest.TestCase):
 
         image.save(mods / "same.png")
         (mods / "same.rgba").write_bytes(rgba(image))
-        # A crop (as forest-hd's background): its PNG is the bigger source image.
+        # A crop (texture_payloads.json "crop"): its PNG is the bigger source image.
         (mods / "cropped.rgba").write_bytes(rgba(image.crop((0, 5, 40, 25))))
         image.save(mods / "cropped.png")
         # Without a PNG at all.

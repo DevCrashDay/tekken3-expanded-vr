@@ -25,9 +25,21 @@ beside the TTT1 catalogue the game reads):
 - with --ttt-disc (your Tekken Tag Tournament USA PS2 disc, .cue, .bin or
   .iso), the music of TTT's endings, decoded from it; without it, a piece of
   Tekken 3's own music, decoded from the player's disc (disc/);
-- cinematics.txt, the feature's settings: the shared lines, then a section
-  "[ending <key>]" per ending with its own TEKKEN3_* lines, selected by the
-  game when that character finishes the Arcade; and version.txt.
+- <key>.cine, each ending for the cinematic engine (src/tekken3_cine.c,
+  docs/CINE-FORMAT.md): poses, camera, fades, models, effects, arena and
+  actors in one file;
+- the converted endings (tools/ps2/ttt_to_cine.py, docs/CINE-CONVERT.md):
+  each one's declaration tools/data/ttt_cinematics/<key>.ending.json and
+  its data <key>.json.gz make <key>.cine, nothing else (no pack, no model);
+- triggers.txt, the engine's trigger table (src/tekken3_cine_trigger.c):
+  one line per ending, its event (ENDINGS' `trigger`: player 1 finishes
+  the Arcade) and its .cine; and version.txt. No environment variables, no
+  clips in the packs.
+- with --old-way instead of triggers.txt, the old way (Ogre's cutscene,
+  TIPS.md sections 57, 69, kept until it is removed): the endings' clips in their
+  participants' packs, and cinematics.txt, the shared lines then a section
+  "[ending <key>]" per ending with its own TEKKEN3_* lines; --old-way
+  --engine: those sections play the .cine files (TEKKEN3_CINE), no clips.
 
 Run again after any new TTT1 import: the packs come from the catalogue's.
 Game data: everything written stays out of the repository.
@@ -43,7 +55,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools/ttt1'))
 from pack_edit import Pack
 
-CINEMATICS_VERSION = 3
+CINEMATICS_VERSION = 9
 STAMP = 'version.txt'
 DATA = ROOT / 'tools/data/ttt_cinematics'
 WORK = ROOT / 'workspace/ttt1-import'
@@ -60,14 +72,21 @@ EFFECT = 'Jin-TTT1-hiteffect.tim'
 # endings-release); p2_aura: player 2's lightning aura (timed property 6)
 # over capture frames, one entry every `step` frames on the next T3 bone;
 # p2_models: player 2 drawn with other model files from a capture frame on;
-# effects: the lightning pack of both players and the strong-hit light.
+# effects: the lightning pack of both players and the strong-hit light;
+# trigger: the event that plays it (docs/CINE-FORMAT.md, section "Triggers").
 ENDINGS = {
-    'kazuya': dict(arena=6, dark=0,                                   # Ogre's temple, lit
+    'kazuya': dict(arena=6, dark=0, trigger='arcade-end p1=kazuya',   # Ogre's temple, lit
                    p2_aura=(832, 1023, [2, 13, 6, 17, 3, 10, 16, 5, 14, 7, 12, 8, 15, 4], 2),
                    p2_models='JinPlain@0,DevilJinEnd@832',             # Jin, then Devil Jin from his transformation
                    effects=True),
-    'armorking': dict(arena=11, dark=0),                              # King's stage, King on his own model
+    'armorking': dict(arena=11, dark=0, trigger='arcade-end p1=armorking'),  # King's stage, King on his own model
 }
+# The endings converted by tools/ps2/ttt_to_cine.py: one declaration file
+# each (<key>.ending.json: arena, dark, trigger, actors and costumes), the
+# whole entry, beside its data. A file per ending, not a line here: the
+# sessions converting endings side by side never touch the same lines.
+CONVERTED = {p.name[:-len('.ending.json')]: json.loads(p.read_text(encoding='utf-8'))
+             for p in sorted(DATA.glob('*.ending.json')) if (DATA / (p.name[:-len('.ending.json')] + '.json.gz')).is_file()}
 
 # The music of TTT's in-engine endings: headerless PS-ADPCM in TEKKEN.BIN,
 # stereo interleaved by 1 024-byte blocks, 44 100 Hz, disc sectors 110 777 to
@@ -248,9 +267,179 @@ def fade_spans(levels, offset, tol=6):
     return spans
 
 
-def ending(key, e, catalogue, out):
+def cine_file(key, e, data, out):
+    """The ending as a .cine file (docs/CINE-FORMAT.md), the same timeline
+    as the old way's: START frames of the first pose and shot, the capture,
+    its last pose held while it fades out, over FADE_OUT + 10 frames later."""
+    p1, p2, cams = data['p1']['poses'], data['p2']['poses'], data['camera']
+    end = START + max(len(p1), len(p2))
+    turn = lambda c: [-c[2], c[1], c[0], -c[5], c[4], c[3]]
+    lines = ['cine 1', f'name {key}', f'length {end + FADE_OUT + 10}', f"arena {e['arena']}", f"dark {e['dark']}",
+             f"actor 0 {data['p1']['guest']} 0", f"actor 1 {data['p2']['guest']} 0"]
+    for model in [m.split('@') for m in e.get('p2_models', '').split(',') if m]:
+        lines.append(f'model 1 ../ttt-cinematics/{model[0]}-TTT1 {START + int(model[1])}')
+    if e.get('effects'):
+        lines += [f'effect 0 {EFFECT}', f'effect 1 {EFFECT}', 'light ff2020']
+    if e.get('p2_aura'):
+        # The lit bone of capture frame n: bones[n // step % len], from START + first on.
+        first, last, bones, step = e['p2_aura']
+        k = first // step % len(bones)
+        lines.append(f'aura 1 {START + first} {START + last} {step} ' + ' '.join(map(str, bones[k:] + bones[:k])))
+    for f in fade_lines(data, end):
+        lines.append('fade ' + ' '.join(map(str, f)))
+    if (out / 'ending-music.pcm').is_file(): lines.append(f'music ending-music.pcm {START}')
+    lines.append(f'music-fallback t3-music.pcm {START}')
+    lines.append(f'camera {START} {len(cams)}')
+    lines += [' '.join(map(str, turn(c))) for c in cams]
+    for i, poses in enumerate((p1, p2)):
+        lines.append(f'poses {i} {START} {len(poses)}')
+        lines += [' '.join(map(str, q)) for q in poses]
+    (out / f'{key}.cine').write_text('\n'.join(lines) + '\n', newline='\n')
+
+
+def converted_cine(key, e, data, out):
+    """A converted ending as a .cine file: its frames are the PS2 script's,
+    everything as tools/ps2/ttt_to_cine.py found it (docs/CINE-CONVERT.md)."""
+    turn = lambda c: [-c[2], c[1], c[0], -c[5], c[4], c[3]]   # the camera turned as the actors are
+    n = data['length']
+    lines = ['cine 1', f'name {key}', f'length {n}', f"arena {e['arena']}", f"dark {e['dark']}"]
+    lines += [f"actor {i} {a['cast']} {a['costume']}" for i, a in enumerate(data['actors'])]
+    # The script's fades; a level other than the image's is held until the
+    # next fade (white until a fade from white, black to the end).
+    fades = sorted(data['fades'])
+    for k, (a, b, x, y) in enumerate(fades):
+        lines.append(f'fade {a} {b} {x} {y}')
+        nxt = fades[k + 1][0] if k + 1 < len(fades) else n + 1000
+        if y and nxt > b: lines.append(f'fade {b} {nxt} {y} {y}')
+    if data.get('music') is not None:
+        if (out / 'ending-music.pcm').is_file(): lines.append(f"music ending-music.pcm {data['music']}")
+        lines.append(f"music-fallback t3-music.pcm {data['music']}")
+    lines.append(f"camera {data['first']} {len(data['camera'])}")
+    lines += [' '.join(map(str, turn(c))) for c in data['camera']]
+    for i, a in enumerate(data['actors']):
+        lines.append(f"poses {i} {data['first']} {len(a['poses'])}")
+        lines += [' '.join(map(str, q)) for q in a['poses']]
+    for i, a in enumerate(data['actors']):
+        for h, steps in enumerate(hand_steps(a, data['first'])):
+            lines += [f'hand {i} {h} {t} {pose}' for t, pose in steps]
+    lines += [f'spark {t} {i} {bone} {kind}' for t, i, bone, kind in data.get('sparks', [])]
+    for block in data.get('sprites', []):
+        lines.append(f"sprite {block['first']} {len(block['rows'])} {len(block['rows'][0])} {data['sprite_look']['colour']}")
+        lines += [' '.join(' '.join(map(str, p)) for p in row) for row in sprite_rows(block['rows'], data['sprite_look'])]
+    (out / f'{key}.cine').write_text('\n'.join(lines) + '\n', newline='\n')
+
+
+# The hands. The data keeps every finger of the PS2 (tools/ps2/ttt_to_cine.py,
+# fingers); a T3 model has no finger of its own, only a table of poses per
+# hand row (13, 17), 4 poses between open and fist (0x80034844, TIPS § 49; the
+# TTT1 arcade has 17, the import keeps 4, convert.hand_steps). Their order is
+# the model's own (Baek's last one is his most open), so the .cine gives a
+# level, 0 open .. 3 fist, and the engine shows the pose of the model's table
+# nearest to it, measured on the table itself (src/tekken3_ttt1_mod.c,
+# hand_pose). A guest hand without a table (ttt1_characters.json "hands", '-')
+# gets nothing; a native's hand without one (Yoshimitsu's sword hand) ignores
+# its steps in the engine.
+# How closed a hand is: the four fingers past the thumb, each one's straight
+# distance from the wrist to its last node over the length of its chain
+# (STRETCH_OPEN on an open hand of these captures, STRETCH_FIST in a fist);
+# HAND_KEEP: how far past the pose kept the value goes before it changes (no
+# flicker).
+HAND_POSES = 4
+STRETCH_OPEN, STRETCH_FIST, HAND_KEEP = 0.95, 0.43, 0.65
+GUESTS = ROOT / 'tools/data/ttt1_characters.json'
+
+
+def hand_closure(offsets, rotations):
+    """0 (open) .. 1 (fist) of one hand at one frame, from its fingers' local
+    rotations (w x y z x 10000, in the parent's frame) and offsets."""
+    def matrix(q):                     # row-vector rotation (v' = v M) of a w x y z quaternion
+        w, x, y, z = (v / 10000 for v in q)
+        return [[1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)],
+                [2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)],
+                [2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)]]
+    mul = lambda v, M: [sum(v[k] * M[k][j] for k in range(3)) for j in range(3)]
+    dist = lambda v: sum(c * c for c in v) ** 0.5
+    stretch = []
+    for f in range(1, 5):                                     # past the thumb
+        R, p, length = [[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0.0, 0.0, 0.0], 0.0
+        for j in range(3):
+            n = 3 * f + j
+            step = mul(offsets[n], R)
+            p = [a + b for a, b in zip(p, step)]; length += dist(step)
+            R = [mul(row, R) for row in matrix(rotations[4 * n:4 * n + 4])]
+        stretch.append(dist(p) / length if length else 1.0)
+    mean = sum(stretch) / len(stretch)
+    return min(1.0, max(0.0, (STRETCH_OPEN - mean) / (STRETCH_OPEN - STRETCH_FIST)))
+
+
+def hand_steps(actor, first):
+    """[hand 0 steps, hand 1 steps] of an actor: [frame, pose] each time its
+    pose changes. Hand 0 (row 13) is the PS2 wrist 38 on the retarget's side 0."""
+    if not actor.get('fingers'): return []
+    guests = json.loads(GUESTS.read_text(encoding='utf-8'))['characters']
+    tables = guests[actor['cast']].get('hands', '??') if actor['cast'] in guests else '??'
+    wrists = ('38', '63') if actor.get('side', 0) == 0 else ('63', '38')
+    out = []
+    for h, wrist in enumerate(wrists):
+        steps, kept = [], None
+        if tables[h] != '-':
+            hand = actor['fingers'][wrist]
+            for k, q in enumerate(hand['rotations']):
+                value = (HAND_POSES - 1) * hand_closure(hand['offsets'], q)
+                if kept is None or abs(value - kept) > HAND_KEEP:
+                    kept = int(round(value))
+                    if not steps or steps[-1][1] != kept: steps.append([first + k, kept])
+        out.append(steps)
+    return out
+
+
+def sprite_rows(rows, look):
+    """The `sprite` lines: per puff x y z (turned as the camera) radius alpha,
+    the alpha ramped in over the first drawn frames and out before the last."""
+    n, k = len(rows), len(rows[0])
+    out = [[[0, 0, 0, 0, 0] for _ in range(k)] for _ in range(n)]
+    for j in range(k):
+        drawn = [bool(r[j] and r[j][3]) for r in rows]
+        t = 0
+        while t < n:
+            if not drawn[t]: t += 1; continue
+            end = t
+            while end + 1 < n and drawn[end + 1]: end += 1
+            for u in range(t, end + 1):
+                x, y, z = rows[u][j][:3]
+                ramp = min(1.0, (u - t + 1) / look['ramp_in'], (end - u + 1) / look['ramp_out'])
+                out[u][j] = [-z, y, x, look['radius'], round(look['alpha'] * ramp)]
+            t = end + 1
+    return out
+
+
+def fade_lines(data, end):
+    """The fades as (from, to, a, b): the captured ones (black before, then
+    black after if the capture ends so, else faded out), or FADE_IN / FADE_OUT."""
+    if data.get('fade'):
+        lv = data['fade']
+        spans = [(0, START - 1, -256, -256)]
+        for span in fade_spans(lv, START):
+            frames, x, y = span.split(':')
+            spans.append((*map(int, frames.split('-')), int(x), int(y)))
+        spans += ([(START + len(lv), end + 1000, -256, -256)] if lv[-1] <= -200 else
+                  [(end, end + FADE_OUT, 0, -256), (end + FADE_OUT, end + 1000, -256, -256)])
+        return spans
+    return [(0, START, -256, -256), (START, START + FADE_IN, -256, 0),
+            (end, end + FADE_OUT, 0, -256), (end + FADE_OUT, end + 1000, -256, -256)]
+
+
+def ending(key, e, catalogue, out, engine=False):
     """One ending's packs, script and camera files; its cinematics.txt section."""
     data = json.loads(gzip.decompress((DATA / f'{key}.json.gz').read_bytes()))
+    cine_file(key, e, data, out)
+    if engine:
+        # The engine plays the .cine: no clips in the packs, no script, every
+        # old key written empty (a selection replaces the previous ending's).
+        return {'TEKKEN3_ENDING': f"{data['p1']['guest']}:{data['p2']['guest']}:{e['arena']}:{e['dark']}",
+                'TEKKEN3_CINE': f'$DIR/{key}.cine', 'TEKKEN3_FIGHT_CINE': '', 'TEKKEN3_EMBU_CAMERA_TRACK': '',
+                'TEKKEN3_EMBU_MODEL_P2': '', 'TEKKEN3_EMBU_EFFECT_P1': '', 'TEKKEN3_EMBU_EFFECT_P2': '',
+                'TEKKEN3_EMBU_EFFECT_LIGHT': '', 'TEKKEN3_EMBU_FADE': ''}
     script, end = clips(data['p1']['poses'], data['p1']['guest'], 0, catalogue, out)
     recs, end2 = clips(data['p2']['poses'], data['p2']['guest'], 1, catalogue, out, e.get('p2_aura'))
     script = sorted(script + recs, key=lambda r: (r[0], r[1])); end = max(end, end2)
@@ -280,6 +469,7 @@ def ending(key, e, catalogue, out):
                 f'{end}-{end + FADE_OUT}:0:-256;{end + FADE_OUT}-{end + 1000}:-256:-256')
     return {
         'TEKKEN3_ENDING': f"{data['p1']['guest']}:{data['p2']['guest']}:{e['arena']}:{e['dark']}",
+        'TEKKEN3_CINE': '',
         'TEKKEN3_FIGHT_CINE': f'$DIR/{key}.cine.txt@ending',
         'TEKKEN3_EMBU_CAMERA_TRACK': f'$DIR/{key}.camera.txt',
         'TEKKEN3_EMBU_MODEL_P2': ','.join(f'../ttt-cinematics/{m}-TTT1@{START + int(f)}' for m, f in steps),
@@ -295,14 +485,37 @@ def main(argv=None):
     ap.add_argument('--catalogue', type=Path, default=ROOT / 'build-release/mods/ttt1', help="the installed TTT1 catalogue")
     ap.add_argument('--out', type=Path, help='default: ttt-cinematics beside the catalogue')
     ap.add_argument('--ttt-disc', type=Path, help='your Tekken Tag Tournament USA PS2 disc: the endings\' music')
+    ap.add_argument('--old-way', action='store_true', help="the old way: cinematics.txt sections, clips in the packs")
+    ap.add_argument('--engine', action='store_true', help='with --old-way: the sections play the .cine files')
     a = ap.parse_args(argv)
     out = a.out or a.catalogue.parent / 'ttt-cinematics'
     out.mkdir(parents=True, exist_ok=True)
-    sections = {key: ending(key, e, a.catalogue, out) for key, e in ENDINGS.items()}
     models(out)
     effect(out)
     if a.ttt_disc: music(a.ttt_disc, out)
-    settings = {'TEKKEN3_ENDING_PACKS': '$DIR'}
+    if not a.old_way:
+        # After the music: a .cine names it when it is there.
+        for key, e in ENDINGS.items():
+            cine_file(key, e, json.loads(gzip.decompress((DATA / f'{key}.json.gz').read_bytes())), out)
+        for key, e in CONVERTED.items():
+            converted_cine(key, e, json.loads(gzip.decompress((DATA / f'{key}.json.gz').read_bytes())), out)
+        if not (out / 'ending-music.pcm').is_file() and (read_stamp(out) != CINEMATICS_VERSION or not (out / 't3-music.pcm').is_file()):
+            t3_music(out)
+        # The old way's leftovers of an earlier run: the game would read none
+        # of them (triggers.txt first), but the packs would shadow the catalogue's.
+        for old in ['cinematics.txt', *(f'{k.capitalize()}-TTT1-combat.jmv' for k in ('kazuya', 'devil', 'armorking', 'king'))]:
+            (out / old).unlink(missing_ok=True)
+        for old in out.glob('*.cine.txt'): old.unlink()
+        for old in out.glob('*.camera.txt'): old.unlink()
+        table = ['triggers 1', '# event condition... cine=<file> then=<after> (docs/CINE-FORMAT.md)']
+        table += [f"{e['trigger']} cine={key}.cine then=credits" for key, e in {**ENDINGS, **CONVERTED}.items()]
+        (out / 'triggers.txt').write_text('\n'.join(table) + '\n', newline='\n')
+        (out / STAMP).write_text(f'{CINEMATICS_VERSION}\n')
+        print(f"TTT cinematics ready in {out}{'' if (out / 'ending-music.pcm').is_file() else ' (Tekken 3 music: no TTT PS2 disc given)'}")
+        return
+    (out / 'triggers.txt').unlink(missing_ok=True)
+    sections = {key: ending(key, e, a.catalogue, out, a.engine) for key, e in ENDINGS.items()}
+    settings = {} if a.engine else {'TEKKEN3_ENDING_PACKS': '$DIR'}
     if (out / 'ending-music.pcm').is_file(): settings['TEKKEN3_EMBU_MUSIC'] = f'$DIR/ending-music.pcm@{START}'
     else:
         if read_stamp(out) != CINEMATICS_VERSION or not (out / 't3-music.pcm').is_file(): t3_music(out)

@@ -98,7 +98,8 @@ def gui(test_hook=None,android_only=False,android_setup=False):
             self.status=tk.StringVar(value='Ready to build the APK' if android_only or android_setup else 'Tekken 3 is set up' if done
                                      else 'An update is ready to install' if self.updating else 'Ready to set up')
             self.detail=tk.StringVar(value=f'It will be saved as {backend.APK.name} in the tekken3-expanded folder.' if android_only or android_setup
-                                     else 'No Python or compiler installation needed.' if os.name=='nt' else 'Your files stay on this Mac.')
+                                     else 'No Python or compiler installation needed.' if os.name=='nt'
+                                     else 'Your files stay on this Mac.' if sys.platform=='darwin' else 'Your files stay on this computer.')
             ttk.Label(root,textvariable=self.status,font=(FONT,11,'bold'),wraplength=585).pack(anchor='w')
             ttk.Label(root,textvariable=self.detail,style='Muted.TLabel',wraplength=585,justify='left').pack(anchor='w',pady=(5,10))
             self.progress=ttk.Progressbar(root,mode='indeterminate',length=590);self.progress.pack(fill='x',pady=(0,16))
@@ -120,7 +121,7 @@ def gui(test_hook=None,android_only=False,android_setup=False):
             self.check=ttk.Checkbutton(root,text='Include the TTT1 characters',variable=self.ttt1,command=self.update_ttt1)
             self.check.pack(anchor='w',pady=(18,6));self.controls.append(self.check)
             self.file_row(root,'TTT1 arcade · tektagt.zip',self.ttt,[('Arcade ZIP','*.zip')],ttt1=True)
-            self.file_row(root,'Tekken 3 arcade · tekken3.zip (optional: arcade difficulty levels)',self.tekken3,[('Arcade ZIP','*.zip')],ttt1=True)
+            self.file_row(root,'Tekken 3 arcade · tekken3.zip (optional: arcade difficulty levels and arcade stages)',self.tekken3,[('Arcade ZIP','*.zip')],ttt1=True)
             self.jin_check=ttk.Checkbutton(root,text="Add-on: Jin's red lightning (from your TTT1 ROM)",variable=self.jin_red)
             self.jin_check.pack(anchor='w',pady=(6,0));self.controls.append(self.jin_check);self.ttt1_controls.append(self.jin_check)
             self.cinematics_check=ttk.Checkbutton(root,text="Add-on: TTT Cinematics",
@@ -134,7 +135,8 @@ def gui(test_hook=None,android_only=False,android_setup=False):
             self.update_cinematics()
             ttk.Label(root,text='Use your own game files. Nothing is uploaded.\n'+
                       ('Only the Android game is built, for an arm64 phone.\nThe first time also downloads the Android tools (about 1 GB).\n'
-                       if self.android_setup else '')+('Tools download automatically; ' if os.name=='nt' else 'Needs cmake, ninja and SDL3 (brew install cmake ninja sdl3); ')
+                       if self.android_setup else '')+('Tools download automatically; ' if os.name=='nt' else 'Needs cmake, ninja and SDL3 (brew install cmake ninja sdl3); '
+                          if sys.platform=='darwin' else 'Needs cmake, ninja and a compiler (Setup Tekken 3.sh checks them); ')
                       +'the first setup with the TTT1 characters takes about 20 minutes.',
                       style='Muted.TLabel',justify='left').pack(anchor='w',pady=(12,20))
         def android_page(self,root):

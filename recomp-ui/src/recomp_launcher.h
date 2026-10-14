@@ -595,6 +595,12 @@ struct RecompLauncherCSettings {
                        [RECOMP_LAUNCHER_MAX_BINDINGS];
     int assist_key_bind[RECOMP_LAUNCHER_MAX_ASSIST_BINDINGS];
     int assist_pad_bind[RECOMP_LAUNCHER_MAX_ASSIST_BINDINGS];
+
+    // ---- host mouse cursor over the game window (GameInfo.has_mouse_cursor)
+    // 0 = always visible, 1 = hidden in fullscreen, 2 = always hidden,
+    // 3 = hidden after a few seconds without mouse movement. Appended
+    // additively; consoles that leave has_mouse_cursor 0 never read it.
+    int mouse_cursor;
 };
 
 // ---- host verification/inspection results (filled by the callbacks below) ----
@@ -1033,6 +1039,9 @@ typedef struct RecompLauncherCGameInfo {
     int settings_bindings;
     const char* const* assist_binding_labels;
     int assist_binding_count;
+    /* Host hides the mouse cursor per Settings.mouse_cursor. 0 => no row.
+     * Appended for ABI stability. */
+    int  has_mouse_cursor;
 } RecompLauncherCGameInfo;
 
 /* recomp_launcher_run_window return codes */

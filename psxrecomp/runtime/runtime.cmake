@@ -801,7 +801,7 @@ function(psxrecomp_add_runtime_target target)
     target_link_libraries(${target} PRIVATE chdr-static)
     # The HD texture packs as PNG (hd_png.c, recomp-ui's stb_image): what the
     # Android APK ships instead of their .rgba. PC builds read only the .rgba
-    # (forest-hd's background.png there is the uncropped source).
+    # (a cropped payload's .png is its uncropped source, texture_payloads.json).
     if(ANDROID AND RECOMP_UI_ROOT AND EXISTS "${RECOMP_UI_ROOT}/src/third_party/stb_image.h")
         target_sources(${target} PRIVATE ${PSXRECOMP_ROOT}/runtime/src/hd_png.c)
         set_source_files_properties(${PSXRECOMP_ROOT}/runtime/src/hd_png.c PROPERTIES

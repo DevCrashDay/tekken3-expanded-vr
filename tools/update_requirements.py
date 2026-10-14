@@ -5,7 +5,9 @@ version with the SHA-256 of every wheel PyPI has for it, so that pip installs
 nothing else (the build scripts use --require-hashes --only-binary=:all:).
 
 Run it again after changing a version below. numpy has no version for every
-Python the build scripts accept (3.10 to 3.14): 2.2 for 3.10, 2.3 from 3.11.
+Python the build scripts accept (3.10 to 3.15): 2.2 for 3.10, 2.3 from 3.11.
+3.15 (no 12.0.0 / 2.3.5 wheels) gets its own pair, checked to import the same
+files byte for byte; 3.10 to 3.14 keep theirs.
 
 Usage: update_requirements.py
 """
@@ -16,9 +18,11 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-IMPORT = (("pillow", "12.0.0", ""),
+IMPORT = (("pillow", "12.0.0", 'python_version < "3.15"'),
+          ("pillow", "12.3.0", 'python_version >= "3.15"'),
           ("numpy", "2.2.6", 'python_version < "3.11"'),
-          ("numpy", "2.3.5", 'python_version >= "3.11"'))
+          ("numpy", "2.3.5", 'python_version >= "3.11" and python_version < "3.15"'),
+          ("numpy", "2.5.4", 'python_version >= "3.15"'))
 PIP = (("pip", "26.2.1", ""),)
 HEADER = ("# Written by tools/update_requirements.py (exact versions, every wheel's\n"
           "# SHA-256 from PyPI): install with --require-hashes --only-binary=:all:\n")

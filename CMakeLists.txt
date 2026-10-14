@@ -57,7 +57,6 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/SLUS_004.02_dispatch.c"
 target_sources(psx-runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_widescreen_mod.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_fight_camera.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_forest_hd_mod.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_nina_skin_mod.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_xiaoyu_skin_mod.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_anna_skin_mod.c"
@@ -68,7 +67,40 @@ target_sources(psx-runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_new_skin_mods.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_selector_timer_mod.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_jin_ttt1_hit_mod.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_high_vram_test.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_arcade_stages.c"
 )
+# Arcade Stages E3: the upper VRAM half's test package, inert unless staged.
+option(TEKKEN3_HIGH_VRAM_TEST "Stage the hidden High VRAM Test package" OFF)
+if(TEKKEN3_HIGH_VRAM_TEST)
+    set(HIGH_VRAM_TEST_PACKAGE "${CMAKE_CURRENT_SOURCE_DIR}/mods/test-packages/tekken3.test.high-vram/1.0.0/manifest.toml")
+    set_property(TARGET psx-runtime APPEND PROPERTY LINK_DEPENDS "${HIGH_VRAM_TEST_PACKAGE}")
+    add_custom_command(TARGET psx-runtime POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:psx-runtime>/mods/packages/tekken3.test.high-vram/1.0.0"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${HIGH_VRAM_TEST_PACKAGE}" "$<TARGET_FILE_DIR:psx-runtime>/mods/packages/tekken3.test.high-vram/1.0.0/manifest.toml"
+        COMMENT "Staging the hidden High VRAM Test package"
+        VERBATIM)
+endif()
+# Arcade Stages (src/tekken3_arcade_stages.c; its hooks are wrapped below):
+# the package, built by default. It does nothing without the stage packs the
+# setup makes from the player's tekken3.zip (tools/arcade_stages/install.py),
+# staged beside the game as mods/arcade-stages, never committed.
+set(ARCADE_STAGES_PACKAGE "${CMAKE_CURRENT_SOURCE_DIR}/mods/local-packages/tekken3.stage.arcade-stages/1.0.0/manifest.toml")
+set_property(TARGET psx-runtime APPEND PROPERTY LINK_DEPENDS "${ARCADE_STAGES_PACKAGE}")
+add_custom_command(TARGET psx-runtime POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:psx-runtime>/mods/packages/tekken3.stage.arcade-stages/1.0.0"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ARCADE_STAGES_PACKAGE}" "$<TARGET_FILE_DIR:psx-runtime>/mods/packages/tekken3.stage.arcade-stages/1.0.0/manifest.toml"
+    COMMENT "Staging the Arcade Stages package"
+    VERBATIM)
+set(ARCADE_STAGES_PACKS "${CMAKE_CURRENT_SOURCE_DIR}/workspace/arcade-stages/pack")
+if(EXISTS "${ARCADE_STAGES_PACKS}/version.txt")
+    set_property(TARGET psx-runtime APPEND PROPERTY LINK_DEPENDS "${ARCADE_STAGES_PACKS}/version.txt")
+    add_custom_command(TARGET psx-runtime POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:psx-runtime>/mods/arcade-stages"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${ARCADE_STAGES_PACKS}" "$<TARGET_FILE_DIR:psx-runtime>/mods/arcade-stages"
+        COMMENT "Staging the arcade stage packs"
+        VERBATIM)
+endif()
 # Tekken-only hooks inside the shared psxrecomp runtime (upstream guards them
 # with TEKKEN3_LAUNCHER, which also brings its launcher).
 target_compile_definitions(psx-runtime PRIVATE TEKKEN3_RUNTIME=1)
@@ -180,6 +212,16 @@ tekken3_wrap_symbol(func_80064E10 WRAPPER "${TEKKEN3_FIGHT_CAMERA_SOURCE}")
 tekken3_wrap_symbol(func_80028CD4)
 # Sounds that must not speed up with the load that follows them (same file).
 tekken3_wrap_symbol(func_800753BC)
+# Arcade Stages E4 (src/tekken3_arcade_stages.c): the PS1 floor (both kinds)
+# and the stage tiles.
+tekken3_wrap_symbol(func_80048E58)
+tekken3_wrap_symbol(func_80049848)
+tekken3_wrap_symbol(func_8006D014)
+# Arcade Stages E5a: the colour fill arena 11 adds under its stage.
+tekken3_wrap_symbol(func_80048374)
+# The Embu's floor: both callers of the floor pointer 0x8009E728.
+tekken3_wrap_symbol(func_80048240)
+tekken3_wrap_symbol(func_80048208)
 set_property(TARGET psx-runtime APPEND PROPERTY LINK_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/mods/preloaded/packages/tekken3.enhancement.true-widescreen/1.0.0/manifest.toml")
 
@@ -202,6 +244,7 @@ if(TEKKEN3_TTT1_CHARACTERS)
     tekken3_wrap_symbol(func_8006A3BC)
     tekken3_wrap_symbol(func_8003C8F0)
     target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_ttt1_combat.c")
+    target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_jin_omen.c")
     set(TTT1_COMBAT_HOOKS "${CMAKE_CURRENT_BINARY_DIR}/tekken3_ttt1_combat_generated.c")
     set(TTT1_PUSH_HOOKS "${CMAKE_CURRENT_BINARY_DIR}/tekken3_ttt1_push_generated.c")
     add_custom_target(tekken3_ttt1_combat_codegen
@@ -216,6 +259,7 @@ if(TEKKEN3_TTT1_CHARACTERS)
     tekken3_wrap_symbol(func_8002F3AC WRAPPER "${TTT1_COMBAT_HOOKS}")
     tekken3_wrap_symbol(func_8003F098 WRAPPER "${TTT1_COMBAT_HOOKS}")
     tekken3_wrap_symbol(func_8002DE24 WRAPPER "${TTT1_COMBAT_HOOKS}")
+    tekken3_wrap_symbol(func_8002D9E8 WRAPPER "${TTT1_COMBAT_HOOKS}")
     target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_ttt1_voices.c")
     tekken3_wrap_symbol(func_80040C90)
     target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_ttt1_sfx.c")
@@ -236,6 +280,7 @@ if(TEKKEN3_TTT1_CHARACTERS)
     tekken3_wrap_symbol(func_8002E0BC)
     tekken3_wrap_symbol(func_8002CC28)
     tekken3_wrap_symbol(func_8002EE94)
+    tekken3_wrap_symbol(func_800449B4)
     tekken3_wrap_symbol(func_8002CD7C)
     tekken3_wrap_symbol(func_80059890)
     tekken3_wrap_symbol(func_8002C580)
@@ -260,6 +305,19 @@ if(TEKKEN3_TTT1_CHARACTERS)
     tekken3_wrap_symbol(func_80052940)
     tekken3_wrap_symbol(func_8004B790)
     tekken3_wrap_symbol(func_8004B928)
+    # The cinematic engine: .cine files played on a frame loop of its own
+    # (docs/CINE-FORMAT.md).
+    target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_cine.c")
+    # Its close shots' floor: the PS1 floor's tiles near the camera, drawn in pieces.
+    target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_cine_floor.c")
+    # Its actors' polygons behind the camera, left out at the end of each part.
+    target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_cine_near.c")
+    tekken3_wrap_symbol(func_800377F8)
+    # Its trigger table (mods/ttt-cinematics/triggers.txt): event -> .cine.
+    target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_cine_trigger.c")
+    tekken3_wrap_symbol(func_80050450)
+    # ... and loads its own scene: arena and fighters, from anywhere.
+    target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/tekken3_cine_scene.c")
     # Shard 04 is HEADER_FILE_ONLY here; TTT1_PUSH_HOOKS compiles its copy.
     tekken3_wrap_symbol(func_80031BFC DEFINED_IN "${TTT1_PUSH_HOOKS}")
     tekken3_wrap_symbol(func_8003172C DEFINED_IN "${TTT1_PUSH_HOOKS}")
@@ -320,17 +378,15 @@ endif()
 add_custom_command(TARGET psx-runtime POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -rf
         "$<TARGET_FILE_DIR:psx-runtime>/mods/packages/tekken3.enhancement.true-widescreen"
+    # Yoshimitsu Forest HD, removed (the arcade stages replace it): its
+    # package and textures left by an older build.
+    COMMAND ${CMAKE_COMMAND} -E rm -rf
+        "$<TARGET_FILE_DIR:psx-runtime>/mods/packages/tekken3.visual.forest-hd"
+        "$<TARGET_FILE_DIR:psx-runtime>/mods/forest-hd"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/mods/preloaded/packages"
         "$<TARGET_FILE_DIR:psx-runtime>/mods/packages"
     COMMENT "Staging Tekken 3 built-in mod catalog"
-    VERBATIM
-)
-add_custom_command(TARGET psx-runtime POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/mods/assets/forest-hd"
-        "$<TARGET_FILE_DIR:psx-runtime>/mods/forest-hd"
-    COMMENT "Staging forest HD texture assets"
     VERBATIM
 )
 add_custom_command(TARGET psx-runtime POST_BUILD

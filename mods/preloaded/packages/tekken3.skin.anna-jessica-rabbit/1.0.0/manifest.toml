@@ -16,7 +16,7 @@ id = "anna-jessica-rabbit"
 name = "Anna — Jessica Rabbit"
 description = "Adds Jessica Rabbit to Anna's L1 skin gallery. Original costumes remain available. Restart after toggling this package."
 group = "Character Skins"
-default_enabled = true
+default_enabled = false
 
 [[plugin]]
 feature = "anna-jessica-rabbit"

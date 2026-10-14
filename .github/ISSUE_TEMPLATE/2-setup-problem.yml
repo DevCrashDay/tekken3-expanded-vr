@@ -1,0 +1,93 @@
+name: Setup or launch problem
+description: The setup, the Android build, the launcher or the first launch fails.
+title: "[Setup] "
+labels: ["setup-launcher"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read the [Troubleshooting](https://github.com/omarma/tekken3-expanded#troubleshooting) section first: most setup failures are explained there (partial ZIP extraction, OneDrive, long paths, wrong ROM revision).
+
+        **Do not attach game files.** Never upload your disc image or your ROM zips. The setup log and screenshots are enough. If the setup says a ROM does not match, give the SHA-1 it printed, not the file.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before opening
+      options:
+        - label: I read the Troubleshooting section and searched the open issues.
+          required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - macOS
+        - Steam Deck (Proton)
+        - Android (Build Android APK)
+        - Other (say which below)
+    validations:
+      required: true
+  - type: dropdown
+    id: step
+    attributes:
+      label: Where it fails
+      options:
+        - Setup Tekken 3 (first install)
+        - Setup Tekken 3 (Update & play)
+        - Build Android APK
+        - Installing the APK on the phone
+        - Launcher (settings, PLAY button)
+        - First launch of the game (black screen, crash, disc not found)
+        - Something else (explain below)
+    validations:
+      required: true
+  - type: dropdown
+    id: version
+    attributes:
+      label: Version
+      options:
+        - v1.2.1 (latest release)
+        - v1.2.0
+        - v1.1.x
+        - git clone of main
+        - I don't know
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Exact error message
+      description: Copy the text shown in the window or the command prompt. A screenshot works too.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: How you got the files (release ZIP and which extractor, or git clone), where the folder is, what you clicked, in order.
+      placeholder: |
+        1. Downloaded Tekken3Expanded-1.2.1-PC.zip, extracted with 7-Zip to D:\Games\tekken3-expanded.
+        2. Double-clicked Setup Tekken 3.cmd, chose my .cue and tektagt.zip.
+        3. The window said "Setup needs attention" after about 2 minutes.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Setup log
+      description: Attach `.setup/setup.log` from the `tekken3-expanded` folder (hidden folder on macOS, Cmd+Shift+. in Finder). For Build Android APK, paste what its window printed. For a crash on the phone, the output of `adb logcat -d -s psxrecomp`.
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `py --version` (Windows) or `python3 --version` (macOS, Linux).
+      placeholder: "Python 3.12.6"
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Antivirus, OneDrive or a cloud-synced folder, a non-ASCII or very long path, an earlier version already installed in the same folder.

@@ -108,6 +108,16 @@ void gr_vram_transfer_out(int x, int y, int w, int h, uint16_t *data);
 int gr_vram_watch(int x, int y, int w, int h);
 int gr_vram_watch_take(int id);
 
+/* Opt-in upper VRAM half (VRAM y 512..1023, 1024 x 512 halfwords at `high`),
+ * created only by a mod (gpu.c, psx_mod_gpu_high_vram_enable). Primitives
+ * never draw into it; the textured primitives that follow read their texels
+ * (tex_high) and/or CLUT (clut_high) there at y & 511, until the next call.
+ * Returns 0 when the backend cannot (the caller then skips the primitive).
+ * gr_high_vram_written tells the backend which rectangle of `high` changed
+ * (y relative to the half). Neither is ever called while no mod enabled it. */
+int  gr_set_high_vram(const uint16_t *high, int tex_high, int clut_high);
+void gr_high_vram_written(int x, int y, int w, int h);
+
 /* Draw area / offset */
 void gr_set_draw_area(int x1, int y1, int x2, int y2);
 void gr_get_draw_area(int *x1, int *y1, int *x2, int *y2);
@@ -234,6 +244,10 @@ typedef struct GpuRenderBackend {
      * pixel count, writes width/height to ow/oh. NULL if unsupported. */
     int  (*wide_dump_full)(uint32_t *out, int cap_pixels, int *ow, int *oh,
                            int base_x);
+    /* Opt-in upper VRAM half (optional; NULL = unsupported, see
+     * gr_set_high_vram). set_high_vram returns 0 when it cannot sample it. */
+    int  (*set_high_vram)(const uint16_t *high, int tex_high, int clut_high);
+    void (*high_vram_written)(int x, int y, int w, int h);
 } GpuRenderBackend;
 
 #ifdef __cplusplus

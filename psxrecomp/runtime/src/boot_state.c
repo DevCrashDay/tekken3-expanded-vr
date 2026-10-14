@@ -59,6 +59,7 @@ extern void timers_set_snapshot(const uint16_t counter[3], const uint32_t mode[3
 /* ---- per-subsystem complete-state accessors (defined in each module) ---- */
 extern uint32_t gpu_snapshot_bytes(void);
 extern void     gpu_snapshot_write(uint8_t* p);
+extern int      gpu_high_vram_restore(const uint16_t* pixels);
 extern int      gpu_snapshot_read(const uint8_t* p, uint32_t len);
 extern uint32_t spu_snapshot_bytes(void);
 extern void     spu_snapshot_write(uint8_t* p);
@@ -370,7 +371,7 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     h.codegen_hash  = (uint32_t)PSX_OVERLAY_CODEGEN_HASH;
     h.abi_tag       = (int32_t)PSX_OVERLAY_ABI_TAG;
     h.codegen_ver   = (uint32_t)PSX_OVERLAY_CODEGEN_VER;
-    h.section_count = 16;
+    h.section_count = gpu_high_vram_pixels() ? 17 : 16;
 
     ok = write_header_le(o, &h);
 
@@ -457,6 +458,20 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
             if (ok) ok = write_section(o, BS_SEC_DIRTY, db, nbytes);
             free(db);
         }
+    }
+    if (ok && gpu_high_vram_pixels()) {
+        /* Opt-in upper VRAM half: only while a mod made it (section_count). */
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+        ok = write_section(o, BS_SEC_VRAM_HI, gpu_high_vram_pixels(), VRAM_SIZE);
+#else
+        uint8_t *wire = (uint8_t *)malloc(VRAM_SIZE);
+        PstW w;
+        if (!wire) return 0;
+        pst_w_init(&w, wire, VRAM_SIZE);
+        ok = pst_w_pod(&w, gpu_high_vram_pixels(), VRAM_SIZE, 2) &&
+             write_section(o, BS_SEC_VRAM_HI, wire, VRAM_SIZE);
+        free(wire);
+#endif
     }
     return ok;
 }
@@ -632,6 +647,27 @@ static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
             }
             free(vbuf);
             return 1;
+        }
+#endif
+    }
+    case BS_SEC_VRAM_HI: {
+        /* Opt-in upper VRAM half: kept by a build whose mod made it. */
+        if (len != VRAM_SIZE) return 0;
+        if (!gpu_high_vram_pixels()) return 1;
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+        gpu_high_vram_restore((const uint16_t*)p);
+        return 1;
+#else
+        {
+            uint16_t* vbuf = (uint16_t*)malloc(VRAM_SIZE);
+            PstR r;
+            int ok;
+            if (!vbuf) return 0;
+            pst_r_init(&r, p, len);
+            ok = pst_r_pod(&r, vbuf, VRAM_SIZE, 2);
+            if (ok) gpu_high_vram_restore(vbuf);
+            free(vbuf);
+            return ok;
         }
 #endif
     }

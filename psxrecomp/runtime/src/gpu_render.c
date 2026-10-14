@@ -14,6 +14,12 @@
 #include "gpu_sw_renderer.h"
 #include <stdio.h>
 
+/* Software texel fetches read the mod's CPU copy of the upper half directly. */
+static int sw_high_vram(const uint16_t *high, int tex_high, int clut_high) {
+    sw_set_high_vram(high, tex_high, clut_high);
+    return 1;
+}
+
 static const GpuRenderBackend SW_BACKEND = {
     .name                          = "software",
     .init                          = sw_renderer_init,
@@ -60,6 +66,7 @@ static const GpuRenderBackend SW_BACKEND = {
     .wide_set_sidecar_complete     = sw_wide_set_sidecar_complete,
     .render_wide_display           = sw_render_wide_display,
     .wide_dump_full                = sw_wide_dump_full,
+    .set_high_vram                 = sw_high_vram,
 };
 
 /* Supplied by gpu_gl_renderer.c; returns NULL until the GL backend is ready. */
@@ -160,6 +167,12 @@ int gr_vram_watch_take(int id) {
     int hit = (s_watch_hit & bit) != 0;
     s_watch_hit &= ~bit;
     return hit;
+}
+int gr_set_high_vram(const uint16_t *high, int tex_high, int clut_high) {
+    return g_b->set_high_vram ? g_b->set_high_vram(high, tex_high, clut_high) : 0;
+}
+void gr_high_vram_written(int x, int y, int w, int h) {
+    if (g_b->high_vram_written) g_b->high_vram_written(x, y, w, h);
 }
 void gr_set_scale(int scale)                         { g_b->set_scale(scale); }
 int  gr_scale(void)                                  { return g_b->scale(); }

@@ -106,6 +106,7 @@ def mark_sound(event):
 # False (tools/ttt1_import.py): an event script with an unknown entry is cut there.
 STRICT_EVENTS=False   # True: an event script ending on an unknown entry stops the conversion
 TRUNCATED_EVENTS={}
+SKIPPED_EVENTS={}     # script -> entries left out, behind the previous one
 
 
 def event_script(ram, index):
@@ -115,10 +116,18 @@ def event_script(ram, index):
     for k in range(256):
         frame,kind,value=struct.unpack_from('<BBH',ram,0x1213c+(start+k)*4)
         if not frame:return out+[0]
-        if kind>3 or frame<previous:
+        if kind>3:
             # Generic TTT1 import: keep the script up to the unknown entry (counted).
             if STRICT_EVENTS:raise ValueError('Invalid timed sound script')
             TRUNCATED_EVENTS[index]=k;return out+[0]
+        if frame<previous:
+            # Both engines skip an entry whose frame has passed and go on
+            # (TTT1 0x8011454C, T3 0x80041428): reached after the previous
+            # one, it never plays. Left out (the runtime wants rising
+            # frames), the rest kept. Script 490, the Jacks' Tarzan win
+            # pose, has one (frame 100 after 103); stopping there lost the
+            # pose's last beats and its crash (B50).
+            SKIPPED_EVENTS.setdefault(index,set()).add(k);continue
         # Kinds 1 and 2 sound an event for the fighter or for its opponent.
         if kind in (1, 2):value=mark_sound(value)
         out.append(frame | kind<<12 | value<<16);previous=frame

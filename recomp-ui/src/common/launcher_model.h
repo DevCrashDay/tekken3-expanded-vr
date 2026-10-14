@@ -342,6 +342,7 @@ typedef struct {
     // One flag gates both rows (two halves of one enhancement); the settings
     // stay independent. false => both rows hidden.
     bool     has_geometry_precision;
+    bool     has_mouse_cursor;       // Mouse cursor row (s.mouse_cursor 0..3)
     // (no has_fullscreen_toggle: the Fullscreen row is universal — every
     // console draws it; the ABI flag of that name is deprecated/ignored.)
     bool     has_bios;
@@ -610,6 +611,8 @@ void launcher_model_toggle_turbo_loads(LauncherModel* m);
 void launcher_model_cycle_fullscreen(LauncherModel* m);        // Off -> Borderless -> Exclusive, wraps
 const char* launcher_model_fullscreen_label(const LauncherModel* m);  // "Off"/"Borderless"/"Exclusive"
 void launcher_model_toggle_fullscreen(LauncherModel* m);       // binary on/off; kept for bool-style hosts
+void launcher_model_cycle_mouse_cursor(LauncherModel* m);      // Visible -> Hidden in fullscreen -> Always hidden -> Hidden when idle, wraps
+const char* launcher_model_mouse_cursor_label(const LauncherModel* m);
 void launcher_model_cycle_language(LauncherModel* m);          // wraps over num_languages
 const char* launcher_model_language_label(const LauncherModel* m);
 void launcher_model_cycle_deadzone_pct(LauncherModel* m);      // 0..50 step 5, wraps; mirrors both players

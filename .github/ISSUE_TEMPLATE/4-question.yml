@@ -1,0 +1,26 @@
+name: Question
+description: Something unclear about how the game or the setup works, not a bug.
+title: "[Question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For install problems, use **Setup or launch problem** instead; for something broken in play, **Bug in game**.
+        The [README](https://github.com/omarma/tekken3-expanded#readme) answers most questions about what is included, which files you need, and the controls.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Not platform-specific
+        - Windows
+        - macOS
+        - Steam Deck (Proton)
+        - Android
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true

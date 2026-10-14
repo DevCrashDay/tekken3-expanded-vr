@@ -545,6 +545,7 @@ def convert(src):
     raise ValueError('aucun placement ne se convertit :\n' + '\n'.join(errors))
 
 HAND_ROWS = (13, 17)      # PS1 rows of the two hands (the engine's 0x80034844 callers)
+REGULAR_POSES = 17        # TTT1's open -> fist progression; some characters have more poses after it
 
 
 def hand_steps(ents, n):
@@ -552,10 +553,13 @@ def hand_steps(ents, n):
     deux demi-poses, poing ferme ; 4 et plus = poses speciales, la pose 0 chez Jin). TTT1
     range 17 poses en progression reguliere ouvert -> poing : recopiees telles quelles,
     l'indice 3 n'etait qu'a un quart de la fermeture et les mains restaient ouvertes.
-    Les quatre premiers indices prennent donc les poses 0, 1/3, 2/3 et la derniere ; les
-    suivants la pose 0, comme les natifs. Les listes de sommets ne changent pas."""
+    Les quatre premiers indices prennent donc les poses 0, 1/3, 2/3 et 16 (0, 5, 11, 16) ;
+    les suivants la pose 0, comme les natifs. Les listes de sommets ne changent pas.
+    Baek, Lee et Ganryu ont une 18e pose, Armor King une 18e et une 19e : des poses a part
+    apres la progression, la derniere plus ouverte que la pose 0 (main a plat). Le poing
+    est donc la pose 16, pas la derniere."""
     if n < 8: return ents
-    steps = [round(i * (n - 1) / 3) for i in range(4)]
+    steps = [round(i * (min(n, REGULAR_POSES) - 1) / 3) for i in range(4)]
     return [ents[s] for s in steps] + [ents[0]] * (len(ents) - 4)
 
 

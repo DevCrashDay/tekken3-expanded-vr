@@ -1,0 +1,54 @@
+name: Feature request
+description: Ask for content or an option that is not in the game yet.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Scope of this project.** Tekken 3 Expanded only brings existing official content from the games you own (Tekken 3, Tekken Tag Tournament, later titles) into Tekken 3. Everything is read from your own disc and ROM files at setup time. The project does **not** create new characters, costumes, stages or moves, and it will **never** ship any file that belongs to Bandai Namco. Requests for invented content, or for bundling game data in the repository, will be closed.
+
+        **Already planned, no need to ask:** more Tekken Tag Tournament endings for TTT Cinematics, and Devil Jin with his Tekken 5 moveset. See [Coming in a future release](https://github.com/omarma/tekken3-expanded#coming-in-a-future-release) in the README.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before opening
+      options:
+        - label: I read the scope above. This request is about official content or an option, not invented content.
+          required: true
+        - label: I checked the README's "Coming in a future release" and searched the open issues for the same request.
+          required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of request
+      options:
+        - Content from another Tekken game (character, costume, stage, music, ending, moves)
+        - Option or setting (launcher, controls, display, audio)
+        - Game mode or CPU behaviour
+        - Setup, install, platform support
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Where it comes from
+      description: For content, the game and platform it exists in (Tekken Tag Tournament arcade, Tekken 3 PS1, Tekken 5 PS2...). Write "none" for an option.
+      placeholder: "Tekken Tag Tournament, PS2 version"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What you would like
+      description: Describe it precisely. If it exists in another game, say how it works there. A video or screenshot of the original is welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: What it changes when playing, and for which modes or characters.
+    validations:
+      required: true

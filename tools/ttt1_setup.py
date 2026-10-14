@@ -160,6 +160,20 @@ def devil_jin():
     logged([sys.executable, ROOT / 'tools/ttt1_devil_jin_moves.py'], LOGS / 'devil-jin-moves.log')
 
 
+def jin_omen(moves=False):
+    """Jin's Omen: the Devil mark painted on his Tekken 3 face (from Jun's
+    capture, like Devil Jin's face). moves: convert Unknown's Jin moveset
+    again too (an update; a full import converts it with the donors)."""
+    if not imported('jun') or moves and not imported('unknown'):
+        print("Jin's Omen: skipped (needs Jun" + (' and Unknown' if moves else '') + ')', flush=True)
+        return
+    print("Jin's Omen...", flush=True)
+    if moves:
+        logged([sys.executable, ROOT / 'tools/ttt1_import.py', 'unknown', '--moveset', 'jin', '--convert'],
+               LOGS / 'unknown@jin.log')
+    logged([sys.executable, ROOT / 'tools/ttt1_jin_omen_mark.py'], LOGS / 'jin-omen.log')
+
+
 def panda_tiger():
     """Panda's and Tiger's portraits and tiles, from TTT1's loading portraits."""
     print('Panda and Tiger portraits...', flush=True)
@@ -173,6 +187,27 @@ def devil_kick():
         return
     print('Devil Kick costume...', flush=True)
     logged([sys.executable, ROOT / 'tools/ttt1_import.py', 'devil'], LOGS / 'devil-kick.log')
+
+
+def tarzan_crash():
+    """Event scripts with an entry behind the previous one, kept past it (B50):
+    the movesets that have one imported again (captures reused). Jack-2's
+    script 490 (the Jacks' Tarzan win pose and its crash: Jack-2, Gun Jack's
+    TTT1 moves, Tetsujin on Jack-2's), Heihachi's 410 / 411 (Unknown's
+    Heihachi, also the native's TTT1 moves). Unknown's Yoshimitsu has one too,
+    with nothing after it: its output is the same."""
+    jobs = [(args, out) for args, out in (
+        (['jack2'], 'jack2/guest/Jack2-TTT1-combat.jmv'),
+        (['gunjack'], 'natives/gunjack/Gunjack-TTT1-combat.jmv'),
+        (['tetsujin', '--moveset', 'jack2', '--convert'], 'tetsujin/guest/Tetsujin@Jack2-TTT1-combat.jmv'),
+        (['unknown', '--moveset', 'heihachi', '--convert'], 'unknown/guest/Unknown@Heihachi-TTT1-combat.jmv'))
+        if (WORK / out).is_file()]
+    if not jobs:
+        print('Event scripts: skipped (none of these movesets imported)', flush=True)
+        return
+    for args, _ in jobs:
+        print(f"Event scripts: {' '.join(args)}...", flush=True)
+        logged([sys.executable, ROOT / 'tools/ttt1_import.py', *args], LOGS / f"events-{'@'.join(args[::2][:2])}.log")
 
 
 def has_work_files():
@@ -193,10 +228,39 @@ def hands_step(roster, work):
                               for w in lines), encoding='utf-8')
 
 
+def hand_fists_step(roster, work):
+    """The fist at TTT1's 17th hand pose, not the last (tools/ttt1_retrofit_hands.py)."""
+    import ttt1_retrofit_hands as H
+    H.main([WORK if work else roster])     # WORK: the guests' own folders and the roster
+
+
+def accessories_step(roster, work):
+    """Springs of the guests' accessory bones from the arcade's table (tools/ttt1/accessories.py):
+    a .acc per costume, next to its model, from the converted model's layout."""
+    sys.path[:0] = [str(ROOT / 'tools/ttt1'), str(ROOT / 'tools/ttt1/model')]
+    import accessories, convert
+    from fmt import load
+    for key in [k for k in characters() if imported(k)]:
+        report = json.loads((WORK / key / 'import-report.json').read_text())
+        ram = (WORK / 'captures' / f'{key}-select-ram.bin').read_bytes()
+        for c, slot in enumerate(TABLE[key].get('costumes') or [report['keys']['slot']], 1):
+            model = WORK / key / ('ttt1.3dm' if c == 1 else f'costume{c}/ttt1.3dm')
+            out = WORK / key / 'guest' / f'{key.capitalize()}-TTT1-arcade-P{c}.acc'
+            if slot is None or not model.is_file() or not out.with_suffix('.3dm').is_file(): continue
+            convert.convert(load(model))
+            springs = accessories.write(out, ram, slot, {s: t for s, t in convert.S2T.items() if s > 20})
+            if not springs['swinging']: out.unlink()
+            print(f'  {key} costume {c}: springs on bones {", ".join(springs["swinging"]) or "none"}', flush=True)
+
+
 UPDATE_STEPS = {'hands': hands_step,
                 'devil-jin': lambda roster, work: devil_jin(),
                 'panda-tiger': lambda roster, work: panda_tiger(),
-                'devil-kick': lambda roster, work: devil_kick()}
+                'devil-kick': lambda roster, work: devil_kick(),
+                'accessories': accessories_step,
+                'tarzan-crash': lambda roster, work: tarzan_crash(),
+                'jin-omen': lambda roster, work: jin_omen(moves=True),
+                'hand-fists': hand_fists_step}
 
 
 def update(roster):
@@ -245,7 +309,7 @@ def rebuild():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('character', nargs='*', help='keys of tools/data/ttt1_characters.json (default: all)')
-    ap.add_argument('--ttt1', type=Path, help='non-merged tektagt.zip, World TEG2/VER.C1')
+    ap.add_argument('--ttt1', type=Path, help='non-merged tektagt.zip, World TEG2/VER.C1, US TEG3/VER.C1 or VER.B, Japan TEG1/VER.C1')
     ap.add_argument('--jobs', type=int, default=min(os.cpu_count() or 4, 12),
                     help='imports at a time (default: the CPU count, at most 12)')
     ap.add_argument('--jin-red-lightning', action='store_true',
@@ -280,6 +344,7 @@ def main():
     donors(args, wanted)
     if not args.character: natives(args)
     devil_jin()
+    jin_omen()
     panda_tiger()
     if args.jin_red_lightning:
         print("Jin's red lightning...", flush=True)

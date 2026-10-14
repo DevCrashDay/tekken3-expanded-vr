@@ -16,7 +16,7 @@ id = "kuma-polar-bear"
 name = "Kuma — Polar Bear"
 description = "Adds Polar Bear to Kuma's L1 gallery alongside original Kuma and Panda. Restart after toggling this package."
 group = "Character Skins"
-default_enabled = true
+default_enabled = false
 
 [[plugin]]
 feature = "kuma-polar-bear"

@@ -8977,6 +8977,26 @@ static void handle_vram_peek(int id, const char *json)
     free(hex);
 }
 
+/* Opt-in upper VRAM half (gpu.c, psx_mod_gpu_high_vram_enable): whether it
+ * exists, whether the renderer samples it, how many primitives read it; with
+ * "path", its 1024x512 halfwords (VRAM y 512..1023) as a raw LE u16 file. */
+static void handle_high_vram(int id, const char *json)
+{
+    extern int psx_mod_gpu_high_vram_ready(void);
+    const uint16_t *hi = gpu_high_vram_pixels();
+    char path[512];
+    if (hi && json_get_str(json, "path", path, sizeof(path))) {
+        FILE *fp = fopen(path, "wb");
+        if (!fp) { send_err(id, "cannot open file"); return; }
+        size_t n = fwrite(hi, sizeof(uint16_t), (size_t)1024 * 512, fp);
+        fclose(fp);
+        if (n != (size_t)1024 * 512) { send_err(id, "short write"); return; }
+    }
+    send_fmt("{\"id\":%d,\"ok\":true,\"enabled\":%d,\"ready\":%d,\"primitives\":%llu}",
+             id, hi != NULL, psx_mod_gpu_high_vram_ready(),
+             (unsigned long long)gpu_high_vram_primitives());
+}
+
 /* GL-backend diagnostic: peek the GPU-side (FBO) VRAM for a rect, plus the
  * coherency flags/rects — lets probes diff FBO truth against CPU truth. */
 extern int  gl_renderer_fbo_peek(int x, int y, int w, int h, uint16_t *out);
@@ -13322,6 +13342,7 @@ static const CmdEntry s_commands[] = {
     { "mmx6_freshfix",     handle_mmx6_freshfix },
     { "mem_words",         handle_mem_words },
     { "vram_peek",         handle_vram_peek },
+    { "high_vram",         handle_high_vram },
     { "gl_coh_ring",       handle_gl_coh_ring },
     { "gl_present_ring",   handle_gl_present_ring },
     { "present_ring",      handle_present_ring },

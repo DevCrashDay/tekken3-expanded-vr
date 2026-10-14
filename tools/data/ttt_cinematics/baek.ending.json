@@ -1,0 +1,18 @@
+{
+ "about": "Baek's Tekken Tag Tournament (PS2) ending (scene 17): Hwoarang kneels, Baek lectures him. Converted by tools/ps2/ttt_to_cine.py (docs/CINE-CONVERT.md).",
+ "scene": "baek",
+ "arena": 4,
+ "dark": 0,
+ "trigger": "arcade-end p1=baek",
+ "actors": [
+  {"cast": "baek", "costume": 0, "skeleton": "baek",
+   "retarget": ["--basis", "canonical", "--contacts", "--twists", "--collars"],
+   "why": "TTT costume -1 (the player's): T3 costume 0"},
+  {"cast": "hwoarang", "costume": 0, "skeleton": "baek", "idle": "roster/Hwoarang-TTT1-idle.poses",
+   "retarget": ["--calib", "{actor0}", "--contacts", "--twists", "--collars"],
+   "why": "a Tekken 3 native on Baek's TTT1 skeleton (no TTT1 model of his), his TTT1 stance; TTT costume 2: T3 costume 0, his white dobok (the user's choice)"}
+ ],
+ "ignore": [
+  {"task": "0x3a0850", "why": "stage 4 background ambience: born with no script command, lives 1-5 frames, always 9700+ units from both actors (median 12000), only in the two stage 4 endings (Baek, Wang); the T3 arena brings its own"}
+ ]
+}

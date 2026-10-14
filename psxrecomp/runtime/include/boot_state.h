@@ -100,6 +100,11 @@ enum {
                               apart (MotK abort@940: fin cyc Δ8, v0 5c83/5c86
                               from identical baselines). Optional on load for
                               old blobs (left untouched when absent).          */
+    BS_SEC_VRAM_HI = 0x11, /* 1 MB opt-in upper VRAM half (VRAM y 512..1023),
+                              written only while a mod enabled it
+                              (gpu_high_vram_pixels). Optional on load:
+                              ignored when the half does not exist, the half
+                              left untouched when the section is absent.      */
 };
 
 /* Save a COMPLETE snapshot at game handoff. Returns 1 on success. */

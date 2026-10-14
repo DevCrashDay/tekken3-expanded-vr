@@ -1,0 +1,16 @@
+{
+ "about": "Michelle's Tekken Tag Tournament (PS2) ending (scene 15): Julia joins Michelle, both seated, they talk. Converted by tools/ps2/ttt_to_cine.py (docs/CINE-CONVERT.md). Neither ever takes her stance (seated all along): canonical basis.",
+ "scene": "michelle",
+ "arena": 13,
+ "dark": 0,
+ "trigger": "arcade-end p1=michelle",
+ "actors": [
+  {"cast": "michelle", "costume": 0, "skeleton": "michelle",
+   "retarget": ["--basis", "canonical", "--contacts"],
+   "why": "TTT costume -1 (the player's): T3 costume 0"},
+  {"cast": "julia", "costume": 0, "skeleton": "michelle", "idle": "roster/Julia-TTT1-idle.poses",
+   "retarget": ["--calib", "{actor0}", "--contacts"],
+   "why": "a Tekken 3 native on Michelle's TTT1 skeleton (no TTT1 model of hers), her TTT1 stance; TTT costume 2: T3 costume 0"}
+ ],
+ "ignore": []
+}

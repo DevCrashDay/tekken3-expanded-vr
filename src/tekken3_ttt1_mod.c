@@ -6,18 +6,20 @@
 #include "psx_sha256.h"
 #include "psx_sdl.h"
 #include "tekken3_ttt1_assets.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 /* Each player's guest model: host copy of its files (sized for the largest
  * guest, the real lengths kept alongside), its guest memory, and its format
  * offsets: first block (word 0 of row 0), to recognise a replaced header, and
  * data start (+16). `generation` and `costume` are the identity and the
- * costume it was read for. */
+ * costume it was read for, `prefix` the files it was read from. */
 enum { FACE_MAX=5 };      /* expressions 1..5: bytes 3..7 of TTT1's 0x801945D8 */
 typedef struct {
-    unsigned generation,costume;
+    unsigned generation,costume;char prefix[48];
     unsigned char file[65536];unsigned size;
     uint32_t relocation[512];unsigned reloc_count;
     unsigned char textures[65536];unsigned textures_size;
@@ -27,6 +29,9 @@ typedef struct {
      * `textures` of the pixels of expression 0 (that image) to face_count. */
     unsigned face_x,face_y,face_w,face_h,face_blink,face_count,face_flag[2];
     unsigned face_image[FACE_MAX+1];
+    /* Springs of accessory bones 18..21 (.acc, tools/ttt1/accessories.py): the
+     * arcade's block of the TTT1 bone drawn on each, none for a rigid bone. */
+    int16_t accessory[4][12];unsigned char swings[4],accessories_changed;
 } GuestModel;
 static GuestModel models[2];
 static uint32_t control;
@@ -160,7 +165,11 @@ static int model_step_count[2]={-1,-1};
 void tekken3_ttt1_embu_models_reset(void) { model_step_count[0]=model_step_count[1]=-1; }
 extern int tekken3_cine_frame(void);
 extern int tekken3_cine_pending(void);
+extern const char *tekken3_cine_model(unsigned player,int *known);
 static const char *embu_model(unsigned player) {
+    int known;
+    const char *engine=tekken3_cine_model(player,&known);   /* the cinematic engine's (src/tekken3_cine.c) */
+    if(known)return engine;
     if(model_step_count[player]<0) {
         model_step_count[player]=0;
         const char *e=getenv(player?"TEKKEN3_EMBU_MODEL_P2":"TEKKEN3_EMBU_MODEL_P1");
@@ -179,7 +188,10 @@ static const char *embu_model(unsigned player) {
      * textures. */
     if(frame<0 && psx_mod_read_word(0x800ae204)!=6 && tekken3_cine_pending())frame=0;
     if(!model_step_count[player] || frame<0)return NULL;
-    const char *out=NULL;
+    /* The first files before the first step: the reload happens at frame 0
+     * and the first step is later (JinPlain@14 in Kazuya's ending), so P2
+     * loaded Devil's geometry and then took JinPlain's textures. */
+    const char *out=model_steps[player][0].prefix;
     for(int i=0;i<model_step_count[player];i++)if(frame>=model_steps[player][i].frame)out=model_steps[player][i].prefix;
     return out;
 }
@@ -243,6 +255,27 @@ static void read_face(unsigned player,const char *root,unsigned costume) {
     }
     m->face_count=count;
 }
+/* The costume's accessory springs: 'ACC1', count, entry size, then per bone
+ * 18..21 the TTT1 bone (0xFFFF: rigid), 0, and twelve halfwords of block. No
+ * file (an import before F03, Tetsujin, Devil Jin): every accessory is rigid. */
+static void read_accessories(unsigned player,const char *root,unsigned costume) {
+    GuestModel *m=&models[player];
+    unsigned char b[8+4*28];char path[4096];
+    memset(m->swings,0,sizeof m->swings);m->accessories_changed=1;
+    if(snprintf(path,sizeof path,"%s/%s-arcade-P%u.acc",root,model_prefix(player),costume)>=(int)sizeof path)return;
+    FILE *f=fopen(path,"rb");
+    if(!f)return;
+    size_t n=fread(b,1,sizeof b,f);fclose(f);
+    if(n<8+4*28 || memcmp(b,"ACC1",4) || half(b+4)!=4 || half(b+6)!=28)return;
+    for(unsigned i=0;i<4;i++) {
+        const unsigned char *e=b+8+i*28;
+        if(half(e)==0xffff)continue;
+        m->swings[i]=1;
+        for(unsigned k=0;k<12;k++)m->accessory[i][k]=(int16_t)half(e+4+k*2);
+    }
+    fprintf(stderr,"%s model: accessory springs on bones %s%s%s%s\n",name_for(player),
+            m->swings[0]?"18 ":"",m->swings[1]?"19 ":"",m->swings[2]?"20 ":"",m->swings[3]?"21":"");
+}
 /* Reads and checks a player's guest model, relocations and textures into
  * the host buffers. Returns 0 and leaves the buffers unusable on failure. */
 static int read_model(unsigned player) {
@@ -270,6 +303,7 @@ static int read_model(unsigned player) {
     if (m->size%4 || reloc_bytes%4) return 0;
     m->reloc_count=(unsigned)(reloc_bytes/4);
     read_face(player,root,costume);
+    read_accessories(player,root,costume);
     /* PS1 model converted by tools/ttt1_import.py: 27 rows. */
     if (word(m->file)!=27 || word(m->file+8)!=0x4b4d4433 || word(m->file+16)!=0x5f8) return 0;
     m->first_block=word(m->file+24); m->payload=word(m->file+16);
@@ -329,12 +363,18 @@ static void follow_models(void) {
         if(!control || (models[p].generation==generation && models[p].costume==costume))continue;
         /* A native on its TTT1 moves keeps its own model. */
         if(tekken3_native_moves_id(p)<23)continue;
+        /* The same files as the model in place: a native of this player
+         * left its TTT1 moves, which moves the generations, not the guest
+         * (GH#89: the previous member's guest read again for a native). */
+        if(models[p].first_block && models[p].costume==costume && !strcmp(models[p].prefix,model_prefix(p))) {
+            models[p].generation=generation;continue;
+        }
         models[p].generation=generation;models[p].costume=costume;
         /* original_base / original_header stay: they are Jin's stock header,
          * whatever the guest, and before_init needs them to put it back when
          * the game keeps the envelope loaded between two guests. */
         face_variant[p]=-1;face_state[p].expression=face_state[p].timer=0;
-        if(read_model(p))install_model(p);
+        if(read_model(p)){install_model(p);snprintf(models[p].prefix,sizeof models[p].prefix,"%s",model_prefix(p));}
         else {models[p].first_block=0;fprintf(stderr,"%s model: rejected\n",name_for(p));}
     }
 }
@@ -1005,8 +1045,16 @@ enum { FACE_TABLE_MODELS=52 };
  * flap the same way (one flap a jump, pose 1 to 36 in about 45 frames, back from 16 in 17,
  * measured on the arcade by tools/ttt1_hands.lua), and their model has the 37 poses, but a
  * guest's character is 23 and over, so the machine never ran. Run it after the engine's own
- * update for a guest whose row 1 has the table; the last pose repeats where the tables go past it. */
+ * update for a guest whose row 1 has the table; the last pose repeats where the tables go past it.
+ * Replays (B53): the KO replay plays back recorded fighters (0x8009BCA8 = 7 while recording, 1
+ * during the replay; 0x8009BCB8 the frame recorded, a ring of 300; 0x8009BCBC the frame played, in
+ * half frames: the replay runs at half speed), but not the airborne trigger: the machine sat at
+ * rest and the wings froze through the slow motion. Keep the pose index of each recorded frame on
+ * a tape of our own and play it back with the replay, leaving the machine's state untouched. */
 enum { WING_TABLE_A=0x80095888, WING_TABLE_B=0x8009589c, WING_LAST=0xff };
+enum { REPLAY_MODE=0x8009bca8, REPLAY_RECORDING=7, REPLAY_PLAYING=1, REPLAY_RECORDED=0x8009bcb8,
+       REPLAY_PLAYED=0x8009bcbc, REPLAY_FRAMES=300 };
+static uint8_t wing_tape[2][REPLAY_FRAMES];
 static void wings_step(uint32_t actor,unsigned player);
 static void wings_step(uint32_t actor,unsigned player) {
     uint32_t model=psx_mod_read_word(0x8009bd28+player*4);
@@ -1026,6 +1074,14 @@ static void wings_step(uint32_t actor,unsigned player) {
         if(n>=24 && n>poses){poses=n;slot=row+48;table=tab;}
     }
     if(!poses)return;
+    const uint32_t mode=psx_mod_read_word(REPLAY_MODE);
+    if(mode==REPLAY_PLAYING) {
+        unsigned index=wing_tape[player][(psx_mod_read_word(REPLAY_PLAYED)>>1)%REPLAY_FRAMES];
+        if(index>=poses)index=poses-1;
+        uint32_t pose=psx_mod_read_word(table+index*4);
+        if(pose)psx_mod_write_word(slot,pose);
+        return;
+    }
     uint8_t flag=psx_mod_read_byte(actor+0x128a),pos=psx_mod_read_byte(actor+0x128b),
             state=psx_mod_read_byte(actor+0x128c),first_step=psx_mod_read_byte(actor+0x128d);
     if(state==0) {
@@ -1045,6 +1101,8 @@ static void wings_step(uint32_t actor,unsigned player) {
     psx_mod_write_byte(actor+0x128b,pos);psx_mod_write_byte(actor+0x128c,state);
     psx_mod_write_byte(actor+0x128d,first_step);
     unsigned index=psx_mod_read_byte((state?WING_TABLE_B:WING_TABLE_A)+pos);
+    if(mode==REPLAY_RECORDING)
+        wing_tape[player][psx_mod_read_word(REPLAY_RECORDED)%REPLAY_FRAMES]=(uint8_t)index;
     if(index>=poses)index=poses-1;
     uint32_t pose=psx_mod_read_word(table+index*4);
     if(pose)psx_mod_write_word(slot,pose);
@@ -1058,12 +1116,63 @@ static void wings_step(uint32_t actor,unsigned player) {
  * its own: a fist or an open hand kept, or a hand that closes on the attacks (the
  * guests.txt hands column, measured on the arcade by tools/ttt1_hands.lua). */
 extern char tekken3_guest_hand(unsigned id,unsigned hand);
+extern int tekken3_cine_hand(unsigned player,unsigned hand);
 static void wings_step(uint32_t actor,unsigned player);
 extern void __real_func_80034844(CPUState *cpu);
 static unsigned hand_index(int16_t gauge) {
     if(gauge>=513)return (unsigned)(gauge-509);
     unsigned i=(unsigned)(gauge>>7);
     return i?i-1:0;
+}
+/* A cinematic asks for how closed a hand is (0 open .. 3 fist, src/tekken3_cine.c "hand"),
+ * not for an index: the order of a table's first four poses is the model's own (Baek's
+ * TTT1 table closes over 0..2 and its last pose is the most open; the natives measured
+ * run from open to fist). Each pose is a position list: +4 its group count g, g bytes
+ * (padded to 4), then the groups, each a vertex count and x y z pad halfwords around the
+ * hand bone; the first group that has vertices is the hand's (later ones are not all
+ * vertex lists: Kunimitsu's). The further its vertices from the bone on average, the more
+ * open the hand. The pose whose closure (0 the table's most open .. 1 its tightest) is
+ * nearest the level's is the one shown; measured once per table. */
+static unsigned hand_pose(uint32_t table,int level) {
+    static struct { uint32_t table; float closure[4]; int ok; } seen[16];
+    static unsigned next;
+    unsigned k=0;
+    while(k<16 && seen[k].table!=table)k++;
+    if(k==16) {
+        k=next++%16; seen[k].table=table; seen[k].ok=1;
+        float mean[4],lo=1e9f,hi=-1e9f;
+        unsigned groups=0,count=0;
+        for(int i=0;i<4;i++) {
+            uint32_t p=psx_mod_read_word(table+4*i),n=0;
+            groups=p?psx_mod_read_word(p+4):0;
+            if(!groups || groups>16) { seen[k].ok=0; break; }
+            p+=8+((groups+3)&~3u);
+            double sum=0;
+            for(unsigned g=0;g<groups;g++) {
+                uint32_t c=psx_mod_read_word(p); p+=4;
+                if(c>1024) { n=0; break; }
+                for(uint32_t v=0;v<c;v++,p+=8) {
+                    double x=(int16_t)psx_mod_read_half(p),y=(int16_t)psx_mod_read_half(p+2),z=(int16_t)psx_mod_read_half(p+4);
+                    sum+=sqrt(x*x+y*y+z*z);
+                }
+                n+=c;
+                if(n)break;        /* the hand's own vertices; later groups are not all vertex lists */
+            }
+            if(!n) { seen[k].ok=0; break; }
+            count=n;
+            mean[i]=(float)(sum/n); if(mean[i]<lo)lo=mean[i]; if(mean[i]>hi)hi=mean[i];
+        }
+        if(seen[k].ok && hi>lo) for(int i=0;i<4;i++)seen[k].closure[i]=(hi-mean[i])/(hi-lo);
+        else seen[k].ok=0;
+        if(seen[k].ok)
+            fprintf(stderr,"Cine hand: table %08x (%u groups, %u vertices) closures %.2f %.2f %.2f %.2f\n",table,
+                    groups,count,seen[k].closure[0],seen[k].closure[1],seen[k].closure[2],seen[k].closure[3]);
+        else fprintf(stderr,"Cine hand: table %08x not measured, the level as the index\n",table);
+    }
+    if(!seen[k].ok)return (unsigned)level;
+    unsigned best=0; float want=level/3.0f;
+    for(unsigned i=1;i<4;i++) if(fabsf(seen[k].closure[i]-want)<fabsf(seen[k].closure[best]-want))best=i;
+    return best;
 }
 void __wrap_func_80034844(CPUState *cpu) {
     uint32_t actor=cpu->gpr[6],slot=cpu->gpr[4];
@@ -1080,6 +1189,10 @@ void __wrap_func_80034844(CPUState *cpu) {
             else if(grip=='D' && hand==0)   /* the other hand's gauge: this one follows the attacks too */
                 cpu->gpr[5]=hand_index((int16_t)psx_mod_read_half(actor+0x127e));
         }
+        /* A cinematic's hand steps (src/tekken3_cine.c, "hand"), on a hand with poses. */
+        int step=hand>=0?tekken3_cine_hand(player,(unsigned)hand):-1;
+        uint32_t table=psx_mod_read_word(slot+4);
+        if(step>=0 && table)cpu->gpr[5]=hand_pose(table,step);
         /* once a frame for each guest and for Devil Jin: the engine updates the hands every frame,
          * and this leaf is not resumed from a continuation as the part update (0x80034970) is */
         wings=hand==1 && (guest || tekken3_devil_jin_player(player)) &&
@@ -1110,42 +1223,117 @@ void __wrap_func_800293BC(CPUState *cpu) {
  * is a switch where T3 has an axis convention (table 0x80095D20), 1 for King's tail, which makes
  * Roger's tail follow the arcade's (term by term correlation 0.8 to 0.98). A guest's model is 52,
  * past the end of the T3 table, so its accessory bones were kept rigid below: the bones the arcade
- * swings get the arcade's block and the native solver runs. The converter keeps the TTT1 bone on
- * the same PS1 bone, except Roger's and Armor King's third tail piece, baked into bone 19 (five
- * accessories, four parts): their bones 20 and 21 are TTT1's 21 and 22. */
-enum { SOFT=1,KING_TAIL,JUN_HAIR,JUN_SKIRT };
-static const int16_t swing_values[][8]={
-    {1,1,128,24,128,128,0,0},           /* 0x8019CECC */
-    {1,2,128,64,144,192,0,0},           /* 0x8019CF3C, King's and Armor King's tail */
-    {1,2,128,48,128,192,0,0},           /* 0x8019D454 */
-    {1,2,192,24,128,192,0,0},           /* 0x8019D57C */
-};
-static const struct { const char *key; int costume; unsigned char block[4]; } swings[]={
-    {"roger",-1,{SOFT,SOFT,SOFT,SOFT}},                 /* tail, ears */
-    {"alex",-1,{SOFT,SOFT,SOFT,0}},                     /* tail */
-    {"armorking",-1,{KING_TAIL,KING_TAIL,SOFT,SOFT}},  /* tail, loincloth */
-    {"jun",0,{JUN_HAIR,SOFT,0,0}},                      /* hair, bow */
-    {"jun",1,{SOFT,0,0,0}},
-    {"jun",2,{JUN_HAIR,JUN_SKIRT,JUN_SKIRT,0}},
-};
-extern const char *tekken3_guest_key(unsigned id);
-extern unsigned tekken3_guest_costume(unsigned player);
-static uint32_t swing_block(unsigned player,unsigned id,unsigned bone) {
-    static uint32_t blocks;
-    const char *key=tekken3_guest_key(id);
-    if(!key || bone>21)return 0;
-    for(unsigned i=0;i<sizeof swings/sizeof *swings;i++) {
-        if(strcmp(key,swings[i].key) || (swings[i].costume>=0 &&
-           (unsigned)swings[i].costume!=tekken3_guest_costume(player)))continue;
-        unsigned k=swings[i].block[bone-18];
-        if(!k)return 0;
-        if(!blocks) {
-            if(!(blocks=psx_mod_alloc_guest_memory(sizeof swing_values,16)))return 0;
-            for(unsigned j=0;j<sizeof swing_values/2;j++)psx_mod_write_half(blocks+j*2,(uint16_t)swing_values[0][j]);
-        }
-        return blocks+(k-1)*16;
+ * swings get the arcade's block and the native solver runs. The blocks and the bone they go on come
+ * from the arcade's table at import (F03, .acc, read_accessories()): the converter may put a TTT1
+ * bone on another PS1 bone, or bake it into another part (rigid). +0 is set to 1, and the collision
+ * mode (+12, 2 in TTT1 only) to 0: T3 reads mode 1 with its own tables. */
+static uint32_t swing_block(unsigned player,unsigned bone) {
+    static uint32_t blocks;              /* 2 players x 4 bones x 16 bytes */
+    GuestModel *m=&models[player];
+    if(bone<18 || bone>21 || !m->swings[bone-18])return 0;
+    if(!blocks && !(blocks=psx_mod_alloc_guest_memory(2*4*16,16)))return 0;
+    if(m->accessories_changed) {
+        m->accessories_changed=0;
+        for(unsigned i=0;i<4;i++)for(unsigned k=0;k<8;k++)
+            psx_mod_write_half(blocks+(player*4+i)*16+k*2,(uint16_t)(k==0?1:k==6?0:m->accessory[i][k]));
     }
-    return 0;
+    return blocks+(player*4+bone-18)*16;
+}
+/* TTT1's accessory solver (0x80163B68) ported for the guests (F03): T3's (0x80037CBC) with what
+ * TTT1 adds. Both aim the bone, from its rest rotation, at its tip: the bone's x axis scaled by +8
+ * (length) in world space, on the floor at most (y >= 0), seen from the joint in the rest frame,
+ * normalized, mixed with gravity in the air (+4 / +6 against a pull to the rest direction), as two
+ * angles (atan2(-z, x), atan2(y, |xz|)). TTT1 adds: (1) the tip is smoothed over +2 frames (actor
+ * +0x126C); (2) collision mode 2 (0x801642B8): the tip stays outside a cylinder of radius +22 around
+ * the x axis of bone +14 through (0, +18, +20) in its frame (Michelle's braids, Ganryu's apron...);
+ * (3) no sideways pull, where T3 adds +10 / 16 on x and z (TTT1 sways them only on King's stage,
+ * 0x80163230). The solver writes the bone's local rotation; the engine (0x8003B418) composes it. */
+enum { ACC_LENGTH=4,ACC_SMOOTH=1,ACC_PULL=2,ACC_DAMP=3,ACC_GRAVITY=5,ACC_MODE=6,ACC_BONE=7,ACC_Y=9,ACC_Z=10,ACC_RADIUS=11 };
+static int32_t accessory_tip[2][4][3];
+static void read_matrix(uint32_t a,int32_t *m) { for(unsigned k=0;k<9;k++)m[k]=(int16_t)psx_mod_read_half(a+k*2); }
+static void read_vector(uint32_t a,int64_t *v) { for(unsigned k=0;k<3;k++)v[k]=(int32_t)psx_mod_read_word(a+k*4); }
+static void multiply(const int32_t *a,const int32_t *b,int32_t *o) {
+    for(unsigned i=0;i<3;i++)for(unsigned j=0;j<3;j++)
+        o[i*3+j]=(int32_t)(((int64_t)a[i*3]*b[j]+(int64_t)a[i*3+1]*b[3+j]+(int64_t)a[i*3+2]*b[6+j])>>12);
+}
+static void apply(const int32_t *m,const int64_t *v,int64_t *o) {
+    int64_t r[3];
+    for(unsigned i=0;i<3;i++)r[i]=(m[i*3]*v[0]+m[i*3+1]*v[1]+m[i*3+2]*v[2])>>12;
+    memcpy(o,r,sizeof r);
+}
+static void rotation(int32_t x,int32_t y,int32_t z,int32_t *out) {     /* 0x8003A338 */
+    int32_t s[3],c[3],angle[3]={x,y,z};
+    for(unsigned i=0;i<3;i++) {
+        uint32_t table=0x8001e8c4+(((uint32_t)angle[i]>>3)&0x1ffe);
+        s[i]=(int16_t)psx_mod_read_half(table);c[i]=(int16_t)psx_mod_read_half(table+0x800);
+    }
+    int32_t a=mul12(c[0],c[2]),b=mul12(c[0],s[2]),d=mul12(s[0],c[2]),e=mul12(s[0],s[2]);
+    int32_t m[9]={mul12(c[1],c[2]),mul12(d,s[1])-b,e+mul12(a,s[1]),mul12(c[1],s[2]),a+mul12(e,s[1]),
+                  mul12(b,s[1])-d,-s[1],mul12(s[0],c[1]),mul12(c[0],c[1])};
+    memcpy(out,m,sizeof m);
+}
+static int32_t lo32(int64_t a,int64_t b) { return (int32_t)(uint32_t)((uint64_t)a*(uint64_t)b); }
+static int32_t sra12(int32_t x) { return (x<0?x+0xfff:x)>>12; }
+static int32_t angle4096(double y,double x) { return (int32_t)lround(atan2(y,x)*2048.0/3.14159265358979323846); }
+static void solve_accessory(uint32_t actor,unsigned player,unsigned bone,const int16_t *k) {
+    const unsigned i=bone-18;
+    const uint32_t out=actor+0xf74+bone*32,record=actor+0x8f4+bone*68,parent=psx_mod_read_word(record+0x40);
+    if(psx_mod_read_word(0x80095494) || psx_mod_read_word(0x80095468))return;     /* paused: as T3 */
+    int32_t rest[9],world_parent[9],world_rest[9],inverse[9],world[9],turn[9],local[9];
+    rotation((int16_t)psx_mod_read_half(actor+0x129e + i*8),(int16_t)psx_mod_read_half(actor+0x12a0+i*8),
+             (int16_t)psx_mod_read_half(actor+0x12a2+i*8),rest);
+    if(!psx_mod_read_half(actor+0x1360+i*2)) {                    /* first frame: the rest pose */
+        psx_mod_write_half(actor+0x1360+i*2,1);
+        for(unsigned n=0;n<9;n++)psx_mod_write_half(out+n*2,(uint16_t)rest[n]);
+        accessory_tip[player][i][0]=INT32_MIN;
+        return;
+    }
+    read_matrix(parent,world_parent);multiply(world_parent,rest,world_rest);
+    for(unsigned r=0;r<3;r++)for(unsigned c=0;c<3;c++)inverse[r*3+c]=world_rest[c*3+r];
+    read_matrix(record,world);
+    int64_t tip[3]={k[ACC_LENGTH],0,0},joint[3],offset[3],t[3];
+    apply(world,tip,tip);read_vector(record+0x14,t);for(unsigned n=0;n<3;n++)tip[n]+=t[n];
+    int32_t *smooth=accessory_tip[player][i];
+    if(smooth[0]==INT32_MIN)for(unsigned n=0;n<3;n++)smooth[n]=(int32_t)tip[n];
+    if(k[ACC_SMOOTH]>1)for(unsigned n=0;n<3;n++)
+        tip[n]=smooth[n]=(int32_t)(((int64_t)smooth[n]*(k[ACC_SMOOTH]-1)+tip[n])/k[ACC_SMOOTH]);
+    for(unsigned n=0;n<3;n++)offset[n]=(int16_t)psx_mod_read_half(out+0x14+n*4);
+    apply(world_parent,offset,joint);read_vector(parent+0x14,t);for(unsigned n=0;n<3;n++)joint[n]+=t[n];
+    int air=tip[1]<0;
+    if(!air)tip[1]=0;
+    int64_t d[3]={tip[0]-joint[0],tip[1]-joint[1],tip[2]-joint[2]},g[3]={0,0,0},v[3];
+    apply(inverse,d,d);
+    double length=sqrt((double)d[0]*d[0]+(double)d[1]*d[1]+(double)d[2]*d[2]);
+    for(unsigned n=0;n<3;n++)d[n]=length>0?(int64_t)(d[n]*4096.0/length):0;
+    if(air) { int64_t pull[3]={0,(0x100-k[ACC_GRAVITY])<<4,0}; apply(inverse,pull,g); }
+    for(unsigned n=0;n<3;n++)v[n]=(d[n]*k[ACC_PULL]+g[n]*k[ACC_DAMP])/256;
+    v[0]+=(0x100-k[ACC_PULL]-k[ACC_DAMP])<<4;
+    if(k[ACC_MODE]==2 && k[ACC_BONE]<18) {                       /* 0x801642B8 */
+        const uint32_t other=actor+0x8f4+k[ACC_BONE]*68;
+        int32_t m[9];read_matrix(other,m);
+        int64_t c0[3]={0,(int64_t)k[ACC_Y]<<12,(int64_t)k[ACC_Z]<<12},c1[3]={4096,c0[1],c0[2]},a[3],b[3],q[3],e[3];
+        apply(m,c0,c0);apply(m,c1,c1);read_vector(other+0x14,t);
+        for(unsigned n=0;n<3;n++){c0[n]+=(t[n]-joint[n])*4096;c1[n]+=(t[n]-joint[n])*4096;}
+        apply(inverse,c0,c0);apply(inverse,c1,c1);
+        /* In 32 bits as the arcade (mflo, addu): A.B overflows for a far tip. */
+        for(unsigned n=0;n<3;n++){a[n]=(int32_t)((uint32_t)c0[n]-lo32(v[n],k[ACC_LENGTH]));b[n]=(int32_t)((uint32_t)c1[n]-(uint32_t)c0[n]);}
+        int64_t along=sra12((int32_t)((uint32_t)lo32(a[0],b[0])+(uint32_t)lo32(a[1],b[1])+(uint32_t)lo32(a[2],b[2]))),distance2;
+        uint32_t sum=0;
+        for(unsigned n=0;n<3;n++){q[n]=sra12((int32_t)((uint32_t)c0[n]-(uint32_t)sra12(lo32(b[n],along))));
+                                  e[n]=sra12(lo32(v[n],k[ACC_LENGTH]))-q[n];sum+=(uint32_t)lo32(e[n],e[n]);}
+        distance2=(int32_t)sum;
+        int64_t radius=k[ACC_RADIUS];
+        if(distance2<lo32(radius,radius)) {
+            int64_t distance=(int64_t)sqrt((double)distance2);
+            if(!distance)distance=1;
+            for(unsigned n=0;n<3;n++)v[n]=e[n]*radius/distance+q[n];
+        }
+    }
+    int32_t yaw=angle4096(-(double)v[2],(double)v[0]);
+    int32_t pitch=angle4096((double)v[1],sqrt((double)v[0]*v[0]+(double)v[2]*v[2]));
+    rotation(0,yaw<<4,pitch<<4,turn);
+    multiply(rest,turn,local);
+    for(unsigned n=0;n<9;n++)psx_mod_write_half(out+n*2,(uint16_t)local[n]);
 }
 extern void __real_func_80037CBC(CPUState *cpu);
 void __wrap_func_80037CBC(CPUState *cpu) {
@@ -1170,7 +1358,7 @@ void __wrap_func_80037CBC(CPUState *cpu) {
                             "angles %08X %08X %08X\n",name_for(p),p+1,bone,row,
                             psx_mod_read_word(r+28),psx_mod_read_word(r+32),psx_mod_read_word(r+36)); }
             }
-            uint32_t block=swing_block(p,psx_mod_read_half(actor+0x18),bone);
+            uint32_t block=swing_block(p,bone);
             if(block) {
                 unsigned i=bone-18;
                 if(psx_mod_read_word(actor+0x136c+i*4)!=block) {
@@ -1179,7 +1367,13 @@ void __wrap_func_80037CBC(CPUState *cpu) {
                 }
                 for(unsigned k=0;k<3;k++)
                     psx_mod_write_half(actor+0x129e + i*8+k*2,(uint16_t)psx_mod_read_word(skeleton+24+row*56+28+k*4));
-                break;
+                /* TEKKEN3_ACCESSORIES=native: T3's solver on the arcade's blocks (no
+                 * smoothing, collision or sideways pull), for comparison. */
+                static int native=-1;
+                if(native<0){const char *e=getenv("TEKKEN3_ACCESSORIES");native=e && !strcmp(e,"native");}
+                if(native)break;
+                solve_accessory(actor,p,bone,models[p].accessory[i]);
+                cpu->pc=cpu->gpr[31];return;
             }
             accessory_rotation(actor+0xf74+bone*32,skeleton+24+row*56);
             cpu->pc=cpu->gpr[31];return;
@@ -1556,13 +1750,17 @@ uint32_t tekken3_ttt1_guest_skeleton(unsigned player) {
 }
 /* Yoshimitsu's sword glow (0x8003172C: actor +0x18 == 4, or Mokujin on
  * his moves) follows the native ID, which an Embu guest keeps: none for a
- * guest. */
+ * guest. Nor for an actor a cinematic's camera is in or past (its points
+ * would project from behind the camera across the screen). */
 extern void __real_func_8003172C(CPUState *cpu);
+extern int tekken3_cine_actor_near(uint32_t actor);        /* src/tekken3_cine_near.c */
 void __wrap_func_8003172C(CPUState *cpu) {
-    if(cpu->pc==0 || cpu->pc==0x8003172c)
+    if(cpu->pc==0 || cpu->pc==0x8003172c) {
         for(unsigned p=0;p<2;p++)if(cpu->gpr[4]==0x800a9228+p*0x188c && tekken3_ttt1_guest_skeleton(p)) {
             cpu->pc=cpu->gpr[31];return;
         }
+        if(tekken3_cine_actor_near(cpu->gpr[4])) { cpu->pc=cpu->gpr[31];return; }
+    }
     __real_func_8003172C(cpu);
 }
 extern void tekken3_embu_scenes_tick(void);

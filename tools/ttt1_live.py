@@ -24,6 +24,9 @@ WORK = ROOT / 'workspace/ttt1-live'
 SAVES = ROOT / 'workspace/fixtures/ps1-saves'          # private selector / fight saves
 STOCK_VRAM = ROOT / 'workspace/fixtures/ps1-slot7-vram.bin'
 GUEST_ID, GUEST_MODEL = 23, 52
+# Windows: the executable's name; no private saves there (TIPS.md section 76): a
+# session then boots to the Arcade selector itself, the state slot 7 holds.
+EXE = 'Tekken_3_Expanded.exe' if os.name == 'nt' else 'Tekken_3_Expanded'
 
 
 def guest_id(player, index):
@@ -41,8 +44,8 @@ def tag_place(k, count):
 
 
 class Session:
-    def __init__(self, visible=False, guest='jun', build=ROOT / 'build-opt-dbg', env=None, slot=7):
-        self.visible, self.guest, self.work, self.slot = visible, guest, WORK, slot
+    def __init__(self, visible=False, guest='jun', build=ROOT / 'build-opt-dbg', env=None, slot=7, line=0):
+        self.visible, self.guest, self.work, self.slot, self.line = visible, guest, WORK, slot, line
         self.assets = build / 'mods/ttt1'
         catalogue = [line.split()[0] for line in (self.assets / 'guests.txt').read_text().splitlines() if line.split()]
         if guest not in catalogue:
@@ -61,15 +64,20 @@ class Session:
         self.run = run = WORK / f'run-{os.getpid()}'
         if run.exists(): shutil.rmtree(run)
         run.mkdir(parents=True)
-        shutil.copy2(build / 'Tekken_3_Expanded', run / 'Tekken_3_Expanded')
+        shutil.copy2(build / EXE, run / EXE)
         for name in ('bios', 'mods'): shutil.copytree(build / name, run / name)
         (run / 'settings.toml').write_text('[video]\nsupersampling=1\n[controller]\np1_device="keyboard"\np2_device="none"\n')
         self.saves = saves = WORK / f'saves-{os.getpid()}'
         if saves.exists(): shutil.rmtree(saves)
-        shutil.copytree(SAVES, saves)
+        self.boot = not SAVES.is_dir()
+        if self.boot:                                       # a memory card copy, if any (as tools/cine_drive.py)
+            (saves / 'openbios').mkdir(parents=True)
+            for card in ('card1.mcd', 'card2.mcd'):
+                if (ROOT / 'saves' / card).is_file(): shutil.copy2(ROOT / 'saves' / card, saves / card)
+        else: shutil.copytree(SAVES, saves)
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0)); port = listener.getsockname()[1]
-        args = [str(run / 'Tekken_3_Expanded'), '--game', str(ROOT / 'game.toml'),
+        args = [str(run / EXE), '--game', str(ROOT / 'game.toml'),
                 '--disc', str(ROOT / 'disc/Tekken 3 (USA).cue'), '--no-launcher', '--renderer', 'software',
                 '--debug-port', str(port), '--memcard-dir', str(saves)]
         if not visible: args.append('--headless')
@@ -95,11 +103,29 @@ class Session:
             except OSError:
                 if time.monotonic() > deadline: raise RuntimeError('debug endpoint did not start')
                 time.sleep(.1)
-        self.q(cmd='savestate', op='load', slot=self.slot)
+        if self.boot: self.boot_to_selector()
+        else: self.q(cmd='savestate', op='load', slot=self.slot)
         self.wait(lambda: 'registered as character 23' in log.read_text(errors='replace'),
                   'the TTT1 characters mod did not register its guest', 30)
         self.q(cmd='clear_input')
         self.loading_captured = False
+
+    def boot_to_selector(self):
+        """Without save states: Start at the title, Cross on the modes menu's
+        line `line` (0 ARCADE: until the stock selector grid shows; 2 TEAM
+        BATTLE without a second pad: its selector, state 10)."""
+        self.q(cmd='turbo', enabled=1)
+        end = time.monotonic() + 180
+        while self.value(0x800AE204) != 4:
+            if time.monotonic() > end: raise RuntimeError('the modes menu never came')
+            if self.value(0x800AE204) in (1, 3): self.press(0xfff7)
+            time.sleep(.3)
+        time.sleep(.3)
+        self.write(0x80097F40, self.line); self.press(0xbfff)
+        if self.line: self.wait(lambda: self.value(0x800AE204) in (9, 10), 'no selector', 60)
+        else: self.wait(lambda: self.value(0x800AE204) == 9 and self.value(0x80118648) == 21, 'no Arcade selector', 60)
+        self.q(cmd='turbo', enabled=0)
+        time.sleep(1.5)
 
     def q(self, **r):
         result = debug_client.query('127.0.0.1', self.info['port'], r)

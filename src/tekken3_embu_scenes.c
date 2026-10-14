@@ -19,7 +19,18 @@
  * Heihachi in, or one of ours, TEKKEN3_FIGHT_CINE) at its counter
  * 0x800B4A54, after our pre-roll; -1 otherwise. */
 static int fight_cine, cine_preroll;
+/* The cinematic engine (src/tekken3_cine.c) answers first. */
+extern int tekken3_cine_engine_active(void);
+extern int tekken3_cine_engine_frame(void);
+extern int tekken3_cine_prepare(const char *path);
+extern int tekken3_cine_play(const char *path,int pre,void (*on_done)(void));
+extern int tekken3_cine_camera(int16_t eye[3],int16_t target[3]);
+extern int tekken3_cine_music_mix(int16_t *out,int frames,int audible,int gain,int *mute);
+extern void tekken3_cine_record_camera(const int32_t view[6]);
+extern void tekken3_cine_test_tick(void);
+extern void tekken3_cine_scene_tick(void);
 int tekken3_cine_frame(void) {
+    if(tekken3_cine_engine_active()) return tekken3_cine_engine_frame();
     if(psx_mod_read_word(0x800ae204)==8 && fight_cine && psx_mod_read_half(0x800ae224)==17) {
         int frame=(int)psx_mod_read_word(0x800b4a54)-cine_preroll;
         return frame<0?-1:frame;
@@ -142,10 +153,15 @@ static void select_ending(int i) {
     free(lines);
     ending_p1=-2; ending_parse();
     cine_reset();
+    /* An ending the engine plays (TEKKEN3_CINE): read now, its first model
+     * files taken by the partner's reload. */
+    const char *engine=getenv("TEKKEN3_CINE");
+    if(engine && *engine) tekken3_cine_prepare(engine);
     ending_selected=i;
     fprintf(stderr,"TTT Cinematics: %s's ending selected\n",endings[i].key);
 }
-int tekken3_cine_pending(void) { return ending_stage==1 || fight_cine || cine_in_round; }
+extern int tekken3_cine_scene_loading(void);
+int tekken3_cine_pending(void) { return ending_stage==1 || fight_cine || cine_in_round || tekken3_cine_engine_active() || tekken3_cine_scene_loading(); }
 /* Whether a player's guest takes its ending pack (TEKKEN3_ENDING_PACKS, read
  * by src/tekken3_ttt1_combat.c) rather than the catalogue's. P1 always: its
  * pack is read as soon as the selector's cursor is on the guest, before any
@@ -158,9 +174,13 @@ int tekken3_ending_pack_wanted(unsigned player) {
     if(ending_p1<0 && !ending_count) return 0;
     return player==0 || (player==1 && ending_stage==1);
 }
+extern int tekken3_cine_trigger_arcade_end(void);
+extern void tekken3_cine_trigger_tick(unsigned state);
 extern void __real_func_8004FF74(CPUState *cpu);
 void __wrap_func_8004FF74(CPUState *cpu) {
     if(cpu->pc==0 || cpu->pc==0x8004ff74) {
+        /* The trigger table first: an ending it plays skips the handler. */
+        if(!ending_stage && tekken3_cine_trigger_arcade_end()) { cpu->pc=cpu->gpr[31]; return; }
         ending_parse();
         /* The table's ending of the character who finishes the Arcade. */
         int e=ending_count && !ending_stage?ending_for(psx_mod_read_half(0x800add5c)):-1;
@@ -262,6 +282,18 @@ static void fight_cine_tick(unsigned state) {
 #define running cine_running
 #define script cine_script
 #define copy cine_copy
+    /* The Arcade's ending played by the engine (TEKKEN3_CINE, the ending's
+     * .cine): on the round's first frame as below, the same pre-roll, then
+     * the Arcade's ending goes on. */
+    const char *engine=getenv("TEKKEN3_CINE");
+    if(engine && *engine && ending_stage==1 && state==8 && !tekken3_cine_engine_active()) {
+        unsigned ph=psx_mod_read_half(0x800ae224);
+        if(ph>=7 && ph<=8) {
+            if(tekken3_cine_play(NULL,90,ending_resume)) return;
+            fprintf(stderr,"Cine: %s could not play, the old way instead\n",engine);
+        }
+    }
+    if(tekken3_cine_engine_active()) return;
     if(!parsed_cine) {
         parsed_cine=1;
         const char *e=getenv("TEKKEN3_FIGHT_CINE"), *at=e?strrchr(e,'@'):NULL;
@@ -390,7 +422,7 @@ static void fight_cine_tick(unsigned state) {
  * the list's last entry, is drawn last. */
 extern void __real_func_8004E000(CPUState *cpu);
 void __wrap_func_8004E000(CPUState *cpu) {
-    if((cpu->pc==0 || cpu->pc==0x8004e000) && (fight_cine || tekken3_cine_frame()>=0)) {
+    if((cpu->pc==0 || cpu->pc==0x8004e000) && (fight_cine || tekken3_cine_frame()>=0 || tekken3_cine_engine_active())) {
         uint32_t ot=psx_mod_read_word(psx_mod_read_word(0x800a8c54)+4);
         if(ot>=0x80000000u) cpu->gpr[4]=ot;
     }
@@ -404,7 +436,7 @@ void __wrap_func_8006D7CC(CPUState *cpu) {
      * fill tiles above) must come after the tile to show; linked before,
      * the tile covered it. */
     __real_func_8006D7CC(cpu);
-    if((cpu->pc==0 || cpu->pc==0x8006d7cc) && fight_cine) {
+    if((cpu->pc==0 || cpu->pc==0x8006d7cc) && (fight_cine || tekken3_cine_engine_active())) {
         if(!cine_clear_tiles) cine_clear_tiles=psx_mod_alloc_gpu_dma_memory(32,16);
         uint32_t ot=psx_mod_read_word(psx_mod_read_word(0x800a8c54)+4)+4092;
         uint32_t tile=cine_clear_tiles+16*(psx_mod_read_word(0x800adefc)&1);
@@ -445,7 +477,15 @@ static void parse_track(void) {
  * bypasses all that. */
 extern void __real_func_80063EEC(CPUState *cpu);
 void __wrap_func_80063EEC(CPUState *cpu) {
-    int frame=(cpu->pc==0 || cpu->pc==0x80063eec)?tekken3_cine_frame():-1;
+    int16_t eye[3],target[3];
+    if((cpu->pc==0 || cpu->pc==0x80063eec) && tekken3_cine_engine_active()) {
+        if(tekken3_cine_camera(eye,target))
+            for(unsigned k=0;k<3;k++) {
+                cpu->gpr[5+k]=(uint32_t)(int32_t)eye[k];
+                psx_mod_write_word(cpu->gpr[29]+20+k*4,(uint32_t)(int32_t)target[k]);
+            }
+    }
+    int frame=(cpu->pc==0 || cpu->pc==0x80063eec) && !tekken3_cine_engine_active()?tekken3_cine_frame():-1;
     if(frame>=0) {
         if(!track_parsed){track_parsed=1;parse_track();}
         if(track_count && frame>=track_start && frame<track_start+track_count) {
@@ -455,6 +495,11 @@ void __wrap_func_80063EEC(CPUState *cpu) {
                 psx_mod_write_word(cpu->gpr[29]+20+k*4,(uint32_t)(int32_t)c[3+k]);
             }
         }
+    }
+    if((cpu->pc==0 || cpu->pc==0x80063eec) && tekken3_cine_frame()>=0) {
+        int32_t view[6];
+        for(unsigned k=0;k<3;k++) { view[k]=(int32_t)cpu->gpr[5+k]; view[3+k]=(int32_t)psx_mod_read_word(cpu->gpr[29]+20+k*4); }
+        tekken3_cine_record_camera(view);
     }
     __real_func_80063EEC(cpu);
 }
@@ -472,6 +517,7 @@ enum { FADES_MAX=64 };          /* a captured ending's fades: a few segments eac
 static Fade fades[FADES_MAX];
 static int fade_count=-1, fade_on;
 static void fade_tick(void) {
+    if(tekken3_cine_engine_active()) return;
     if(fade_count<0) {
         fade_count=0;
         const char *e=getenv("TEKKEN3_EMBU_FADE");
@@ -509,6 +555,8 @@ static int16_t *music;
 static uint32_t music_frames, music_pos;
 static int music_from=-2;
 int tekken3_embu_music_mix(int16_t *out,int frames,int audible,int gain) {
+    int mute;
+    if(tekken3_cine_music_mix(out,frames,audible,gain,&mute)) return mute;
     if(music_from==-2) {
         music_from=-1;
         const char *e=getenv("TEKKEN3_EMBU_MUSIC"), *at=e?strrchr(e,'@'):NULL;
@@ -553,6 +601,9 @@ void tekken3_embu_scenes_tick(void) {
     fade_tick();
     fight_cine_tick(state);
     ending_tick(state);
+    tekken3_cine_trigger_tick(state);
+    tekken3_cine_test_tick();
+    tekken3_cine_scene_tick();
 }
 
 /* Another ending selected: everything read from its TEKKEN3_* lines is
@@ -575,11 +626,15 @@ static void cine_reset(void) {
  * "[ending KEY]" opens that character's ending, whose lines are kept for
  * its selection (the endings table above). */
 extern const char *tekken3_ttt1_asset_root(void);
+extern int tekken3_cine_triggers_load(const char *dir);
 static void activate_cinematics(void) {
     static int done;
     const char *root=tekken3_ttt1_asset_root();
     char dir[4096],path[4200],line[4096];
     if(done || !root || snprintf(dir,sizeof dir,"%s/../ttt-cinematics",root)>=(int)sizeof dir) return;
+    /* The engine's trigger table (triggers.txt) replaces this file's
+     * sections; a test's TEKKEN3_ENDING still takes the old way. */
+    if(!getenv("TEKKEN3_ENDING") && tekken3_cine_triggers_load(dir)) { done=1; return; }
     snprintf(path,sizeof path,"%s/cinematics.txt",dir);
     FILE *f=fopen(path,"r");
     if(!f) { fprintf(stderr,"TTT Cinematics: no %s (run the setup with the TTT endings)\n",path); return; }

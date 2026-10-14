@@ -24,7 +24,7 @@ Enchaine, sans code propre au personnage :
    placee comme dans la VRAM d'un combat), convertie en paquet d'effet
    Tekken 3 (tools/ttt1/hit_effect.py).
 
-Tout vient des fichiers de l'utilisateur : son tektagt.zip non fusionne (World TEG2/VER.C1, chaque puce verifiee par SHA-1 par
+Tout vient des fichiers de l'utilisateur : son tektagt.zip non fusionne (World TEG2/VER.C1, US TEG3/VER.C1 ou VER.B, Japon TEG1/VER.C1, chaque puce verifiee par SHA-1 par
 arcade_model_probe.reconstruct) et son disque Tekken 3 USA (disc/, pour
 l'executable et la police des noms). Le depot ne contient aucune donnee du jeu :
 ni modele, ni texture, ni portrait, ni son.
@@ -74,7 +74,7 @@ def sources(args):
     if not all((TTT1 / n).is_file() for n in names):
         import arcade_model_probe as probe
         print('Verification des puces de tektagt.zip...', flush=True)
-        definition = json.loads(probe.MANIFEST.read_text())['sets']['tektagt']
+        definition = json.loads(probe.MANIFEST.read_text())['sets'][probe.ttt_set(zip_path)]
         regions, _ = probe.reconstruct(zip_path, definition)
         TTT1.mkdir(exist_ok=True)
         for k, data in regions.items(): (TTT1 / (k.replace(':', '_') + '.bin')).write_bytes(data)
@@ -88,7 +88,11 @@ def capture_select(key, entry):
     ram = CAPTURES / f'{key}-select-ram.bin'
     if ram.exists(): return ram
     CAPTURES.mkdir(parents=True, exist_ok=True)
-    ram.write_bytes(R.select(R.boot(TTT1), *R.character(key, entry), entry.get('force_moveset')))
+    # Imports run in parallel (tools/ttt1_setup.py) and Devil / Angel read the
+    # Jacks' capture (capture_aliases): never let one see a half-written file.
+    temp = ram.with_name(f'{ram.name}.{os.getpid()}.tmp')
+    temp.write_bytes(R.select(R.boot(TTT1), *R.character(key, entry), entry.get('force_moveset')))
+    os.replace(temp, ram)
     print(f'RAM de selection (ROM) -> {ram.name}')
     return ram
 
@@ -191,6 +195,11 @@ def model(ram, slot, out, name, work, costume=1):
         report['face'] = dict(shown=placed[0], size=shown[2:], expressions=placed[1:], blink=blink,
                               flag_a=flag_a, flag_b=flag_b)
     layout = {s: t for s, t in convert.S2T.items() if s > 20}
+    # Ressorts des os d'accessoires (queues, cheveux, pans...), de la table de l'arcade
+    # 0x8019D674 pour cet emplacement, sur les os PS1 de ce placement.
+    import accessories
+    springs = accessories.write(base.with_suffix('.acc'), d, slot, layout)
+    if not springs['swinging']: base.with_suffix('.acc').unlink()
     print(f'modele : {len(ps1)} o, {len(relocs)} relocalisations, lignes 21..26 <- {layout}, '
           f'seconds maillages {convert.SECOND}')
     lost = convert.unplaced(src)
@@ -199,7 +208,7 @@ def model(ram, slot, out, name, work, costume=1):
           f'{len(report["reduced"])} reduites en 16 couleurs')
     bad = check_texpack.main(work / 'ttt1.3dm', work / 'ttt1.tex', base.with_suffix('.3dm'), base.with_suffix('.tim'))
     return dict(bytes=len(ps1), relocations=len(relocs), layout=layout, second=convert.SECOND, limbs=convert.limb_map(src), unplaced_rows=lost,
-                textures=report, texture_mismatches=bad)
+                textures=report, texture_mismatches=bad, accessories=springs)
 
 
 def motion(ram, witness, out, name, work):
@@ -240,12 +249,15 @@ def moves(ram, keys, records, limb_map, out, name, suffix=''):
           f'regles ecartees {report["omitted_rules"]}')
     if report['truncated_event_scripts']:
         print(f'ATTENTION : scripts d evenements tronques a une entree inconnue : {report["truncated_event_scripts"]}')
+    if report['skipped_event_entries']:
+        print(f'scripts d evenements, entrees en arriere ecartees (jamais jouees) : {report["skipped_event_entries"]}')
     if report['defender_specific_cancel_rules']:
         print(f'reaction aux lasers : {report["defender_specific_cancel_rules"]} regles des Jacks, '
               f'{report["laser_reaction_moves"]} enregistrements a eux')
     return {k: report[k] for k in ('records', 'clips', 'cancel_entries', 'omitted_rules',
                                    'defender_specific_cancel_rules', 'laser_reaction_moves',
-                                   'omitted_conditions', 'truncated_event_scripts', 'sound_indexes')}
+                                   'omitted_conditions', 'truncated_event_scripts', 'skipped_event_entries',
+                                   'sound_indexes')}
 
 
 def costumes(ram, keys, entry, records, limbs, out, name, work):
@@ -256,7 +268,7 @@ def costumes(ram, keys, entry, records, limbs, out, name, work):
     null dans la liste : pas de costume a ce rang (Tetsujin au Pied)."""
     slots = entry.get('costumes', [keys['slot']])
     for c in (2, 3):
-        for e in ('3dm', 'relocs', 'tim', 'face'): (out / f'{name}-TTT1-arcade-P{c}.{e}').unlink(missing_ok=True)
+        for e in ('3dm', 'relocs', 'tim', 'face', 'acc'): (out / f'{name}-TTT1-arcade-P{c}.{e}').unlink(missing_ok=True)
         for f in (f'{name}-TTT1-combat-P{c}.jmv', f'{name}-TTT1-tables-P{c}.jst'): (out / f).unlink(missing_ok=True)
     report = {'1': dict(slot=slots[0])}
     for c, slot in enumerate(slots[1:], 2):
@@ -266,7 +278,7 @@ def costumes(ram, keys, entry, records, limbs, out, name, work):
             m = model(ram, slot, out, name, work / f'costume{c}', c)
         except ValueError as e:
             print(f'ATTENTION : costume {c} non converti, ecarte : {str(e).splitlines()[-1]}')
-            for e in ('3dm', 'relocs', 'tim', 'face'): (out / f'{name}-TTT1-arcade-P{c}.{e}').unlink(missing_ok=True)
+            for e in ('3dm', 'relocs', 'tim', 'face', 'acc'): (out / f'{name}-TTT1-arcade-P{c}.{e}').unlink(missing_ok=True)
             report[str(c)] = dict(slot=slot, error=str(e))
             continue
         mv = moves(ram, keys, records, m['limbs'], out, name, f'-P{c}') if m['limbs'] != limbs else dict(shared=True)
@@ -469,7 +481,7 @@ def native(key, entry):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('character')
-    ap.add_argument('--ttt1', type=Path, help='ton tektagt.zip non fusionne (World TEG2/VER.C1)')
+    ap.add_argument('--ttt1', type=Path, help='ton tektagt.zip non fusionne (World TEG2/VER.C1, US TEG3/VER.C1 ou VER.B, Japon TEG1/VER.C1)')
     ap.add_argument('--moveset', action='append', metavar='DONNEUR',
                     help='personnage a moveset tire au hasard (Tetsujin) : importer ce moveset donneur '
                          '(repetable ; all = tous les donneurs de la table)')

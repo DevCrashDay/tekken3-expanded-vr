@@ -1,6 +1,6 @@
 """ROM-free checks for setup integrity, archive boundaries and cancellation."""
 from pathlib import Path
-import contextlib,hashlib,io,json,os,re,subprocess,sys,tempfile,time,unittest,zipfile
+import contextlib,hashlib,io,json,os,re,shutil,subprocess,sys,tempfile,time,unittest,zipfile
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import setup_backend as backend
@@ -116,6 +116,22 @@ class SetupTests(unittest.TestCase):
                 self.assertEqual([p for p in spare if p.exists()],[]);self.assertEqual([p for p in kept if not p.exists()],[])
                 backend.decline_free_space();self.assertFalse(backend.offer_free_space(1024**3))
 
+    @unittest.skipIf(os.name=='nt','POSIX paths and modes')
+    def test_linux_script_and_menu_entry_start_the_game_or_the_setup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'tekken 3 $expanded';root.mkdir();script=root/'Tekken 3 Expanded.sh'
+            with patch.object(backend,'ROOT',root),patch.object(backend,'PLAY_SH',script),\
+                 patch.dict(os.environ,{'XDG_DATA_HOME':str(Path(temp)/'data')}):
+                backend.play_linux();entry=backend.desktop_entry()
+            self.assertEqual(entry,Path(temp)/'data/applications/tekken3-expanded.desktop')
+            text=script.read_text()
+            self.assertIn('sys.exit(0 if b.ready() else 3)',text);self.assertIn('[ $? -eq 3 ]',text);self.assertIn('exec ./"Setup Tekken 3.sh"',text)
+            self.assertIn('exec build-release/Tekken_3_Expanded',text)
+            desktop=entry.read_text()
+            self.assertIn('Name=Tekken 3 Expanded\n',desktop);self.assertIn(f'Path={root}\n',desktop)
+            self.assertIn('Exec="'+str(script).replace('$','\\$')+'"\n',desktop)
+            self.assertTrue(os.access(script,os.X_OK))
+
     def test_macos_app_starts_the_game_or_the_setup(self):
         with tempfile.TemporaryDirectory() as temp:
             app=Path(temp)/'Tekken 3 Expanded.app'
@@ -216,7 +232,8 @@ class UpdateTests(unittest.TestCase):
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
         root=self.root=Path(temp.name);build=root/'build-release';state=root/'.setup';work=root/'workspace/ttt1-import'
         self.rom=root/'roms/tektagt.zip';self.disc=root/'roms/Tekken 3.cue'
-        self.paths=dict(ROOT=root,STATE=state,BUILD=build,EXE=build/'game',WORK=work,ROSTER=work/'roster',INSTALLED=build/'mods/ttt1')
+        self.paths=dict(ROOT=root,STATE=state,BUILD=build,EXE=build/'game',WORK=work,ROSTER=work/'roster',INSTALLED=build/'mods/ttt1',
+                        ARCADE_STAGES_PACKS=root/'workspace/arcade-stages/pack',ARCADE_STAGES_INSTALLED=build/'mods/arcade-stages')
         self.commands=[]
         for name,value in self.paths.items():
             patcher=patch.object(backend,name,value);patcher.start();self.addCleanup(patcher.stop)
@@ -251,9 +268,38 @@ class UpdateTests(unittest.TestCase):
             roster=self.paths['ROSTER']
             if '--update' not in command:self.catalogue(roster,None)
             self.V.write_stamp(roster)
+        if command[1].endswith('install.py'):
+            self.packs(Path(command[command.index('--out')+1]),self.A.ARCADE_STAGES_VERSION)
 
     def fake_build(self,toolchain,env,include_ttt1):
         self.commands.append(['build']);self.paths['EXE'].write_bytes(b'rebuilt game')
+        # CMakeLists.txt: the stage packs of workspace/ staged beside the game.
+        packs=self.paths['ARCADE_STAGES_PACKS']
+        if (packs/'version.txt').is_file():
+            shutil.rmtree(self.paths['ARCADE_STAGES_INSTALLED'],ignore_errors=True)
+            shutil.copytree(packs,self.paths['ARCADE_STAGES_INSTALLED'])
+
+    @property
+    def A(self):return backend.arcade_stages_version()
+
+    def packs(self,folder,stamp):
+        folder.mkdir(parents=True,exist_ok=True)
+        for s in self.A.STAGES:(folder/self.A.pack_name(s)).write_bytes(b'ASTG')
+        (folder/'version.txt').write_text(f'{stamp}\n')
+
+    def with_tekken3(self,**ready):
+        """A current install that was given tekken3.zip (difficulty levels made)."""
+        self.install(self.V.TTT1_IMPORT_VERSION)
+        zip_path=self.root/'roms/tekken3.zip';zip_path.parent.mkdir(exist_ok=True);zip_path.write_bytes(b'zip')
+        (self.root/'workspace/difficulty').mkdir(parents=True);(self.root/'workspace/difficulty/levels.bin').write_bytes(b'T3DF')
+        inputs=backend.load_json(self.paths['STATE']/'last-inputs.json');inputs['tekken3']=str(zip_path)
+        backend.save_json(self.paths['STATE']/'last-inputs.json',inputs)
+        state=backend.load_json(self.paths['STATE']/'ready.json');state.update(ready)
+        backend.save_json(self.paths['STATE']/'ready.json',state)
+        patcher=patch.object(backend,'tekken3_supported',return_value=True);patcher.start();self.addCleanup(patcher.stop)
+        return zip_path
+
+    def stage_runs(self):return [c for c in self.commands if c[1:2] and c[1].endswith('install.py')]
 
     def later(self):
         """Versions after 1 without steps, so a test's UPDATES[1] alone decides."""
@@ -364,6 +410,56 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(len(self.updates()),1);self.assert_updated()
         for folder in ('INSTALLED','ROSTER'):self.V.write_stamp(self.paths[folder],0)   # a new import needed, the ROM moved
         with patch.object(make_apk,'report'),self.assertRaisesRegex(make_apk.Stop,'tektagt.zip'):make_apk.up_to_date()
+
+    def test_tekken3_makes_the_arcade_stages_before_the_build(self):
+        zip_path=self.with_tekken3()            # set up with tekken3.zip before the arcade stages existed
+        self.assertFalse(backend.ready())
+        backend.update_install()
+        self.assertEqual(len(self.stage_runs()),1);self.assertEqual(self.commands[-1],['build'])
+        command=self.stage_runs()[0];self.assertEqual(command[command.index('--tekken3')+1],str(zip_path))
+        self.assertEqual(self.imports(),[])
+        self.assertTrue(self.A.current(self.paths['ARCADE_STAGES_INSTALLED']))
+        self.assertTrue(backend.load_json(self.paths['STATE']/'ready.json')['arcade_stages'])
+        self.assertTrue(backend.ready())
+        self.commands.clear();backend.update_install()      # current: not made again
+        self.assertEqual(self.stage_runs(),[])
+
+    def test_older_arcade_stages_are_made_again(self):
+        self.with_tekken3(arcade_stages=True)
+        self.packs(self.paths['ARCADE_STAGES_INSTALLED'],self.A.ARCADE_STAGES_VERSION-1)
+        self.assertFalse(backend.ready())
+        backend.update_install()
+        self.assertEqual(len(self.stage_runs()),1);self.assertTrue(backend.ready())
+
+    def test_freed_workspace_keeps_the_installed_arcade_stages(self):
+        self.with_tekken3(arcade_stages=True)
+        self.packs(self.paths['ARCADE_STAGES_INSTALLED'],self.A.ARCADE_STAGES_VERSION)
+        self.assertTrue(backend.ready())
+        backend.update_install()
+        self.assertEqual(self.stage_runs(),[]);self.assertTrue(backend.ready())
+
+    def test_arcade_stages_that_fail_keep_the_ps1_stages(self):
+        self.with_tekken3()
+        def fail(command,**k):
+            if str(command[1]).endswith('install.py'):raise backend.SetupError('no')
+            self.fake_run(command,**k)
+        backend.run.side_effect=fail
+        backend.update_install()                 # the setup still finishes
+        self.assertFalse(backend.load_json(self.paths['STATE']/'ready.json')['arcade_stages'])
+        self.assertTrue(backend.ready())
+
+    def test_no_tekken3_no_arcade_stages(self):
+        self.install(self.V.TTT1_IMPORT_VERSION)
+        self.assertTrue(backend.ready())
+        backend.update_install()
+        self.assertEqual(self.stage_runs(),[])
+        self.assertFalse(backend.load_json(self.paths['STATE']/'ready.json')['arcade_stages'])
+
+    def test_arcade_stages_version_stamp(self):
+        folder=self.root/'packs'
+        self.assertFalse(self.A.current(folder))
+        self.packs(folder,self.A.ARCADE_STAGES_VERSION);self.assertTrue(self.A.current(folder))
+        (folder/'stage12.ast').unlink();self.assertFalse(self.A.current(folder))
 
     def test_update_steps_chain_versions(self):
         steps=self.V.update_steps

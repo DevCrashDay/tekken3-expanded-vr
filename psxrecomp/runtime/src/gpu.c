@@ -2667,8 +2667,14 @@ static void ws_refresh_current_reveal_margins(void) {
 /* A native-wide sidecar is host-owned and is not automatically redrawn like
  * the guest's canonical framebuffer. Refresh its synthetic columns once per
  * active back buffer and frame, before this list submits any margin geometry. */
+/* Only a linked-list DMA names the guest address of the packet each GP0 word
+ * comes from; the upper VRAM half (see psx_mod_gpu_high_vram_source) trusts
+ * that address inside the walk only. */
+static int s_hivram_in_list;
+
 void gpu_ws_begin_linked_list(void) {
     gp0_ot_rank = 0xFFFFu;
+    s_hivram_in_list = 1;
     ws_nw_sync_target();
     if (!ws_nw_full_mirror) ws_refresh_current_reveal_margins();
 }
@@ -2683,6 +2689,7 @@ void gpu_set_gp0_linked_list_node(uint32_t addr, uint32_t word_count) {
 
 void gpu_ws_end_linked_list(void) {
     gp0_ot_rank = 0xFFFFu;
+    s_hivram_in_list = 0;
 }
 
 
@@ -5415,9 +5422,111 @@ static int tex_alias_uv(unsigned u, unsigned v) {
 
 static void gp0_execute_command_now(void);
 
+/* ---- Opt-in upper VRAM half --------------------------------------------
+ * Namco System 12's GPU has 1024 x 1024 VRAM; the PS1's has 512 lines and
+ * wraps y at 512. A mod can add the upper half, y 512..1023 (see
+ * mod_plugins.h): nothing is allocated and nothing changes until
+ * psx_mod_gpu_high_vram_enable(). Then only the primitives of the guest
+ * packet memory named by psx_mod_gpu_high_vram_source() may read it, with
+ * the System 12 bits: texpage bit 11 = texture page y + 512 (polygons, and
+ * sprites after such an E1 or polygon), CLUT bit 15 = CLUT y + 512. Every
+ * other primitive, the game's included, keeps the PS1's 512-line VRAM.
+ * Primitives never draw into the upper half. */
+#define HIVRAM_SOURCES 8
+static uint16_t *s_hivram;
+static struct { uint32_t lo, hi; } s_hivram_src[HIVRAM_SOURCES];
+static int s_hivram_nsrc;
+static unsigned s_hivram_sprite_page;   /* texpage bit 11 last set by a trusted packet */
+static uint64_t s_hivram_prims;
+
+int psx_mod_gpu_high_vram_enable(void) {
+    if (!s_hivram) s_hivram = (uint16_t *)calloc(1024u * 512u, sizeof *s_hivram);
+    return s_hivram != NULL;
+}
+
+int psx_mod_gpu_high_vram_ready(void) {
+    if (!s_hivram) return 0;
+    int ok = gr_set_high_vram(s_hivram, 1, 1);
+    gr_set_high_vram(s_hivram, 0, 0);
+    return ok;
+}
+
+const uint16_t *gpu_high_vram_pixels(void) { return s_hivram; }
+uint64_t gpu_high_vram_primitives(void) { return s_hivram_prims; }
+
+int psx_mod_gpu_high_vram_upload(int x, int y, int w, int h, const uint16_t *pixels) {
+    if (!s_hivram || !pixels || w <= 0 || h <= 0 || x < 0 || y < 512 ||
+        x + w > 1024 || y + h > 1024)
+        return 0;
+    for (int row = 0; row < h; row++)
+        memcpy(s_hivram + (size_t)(y - 512 + row) * 1024u + (unsigned)x,
+               pixels + (size_t)row * (unsigned)w, (size_t)w * sizeof *pixels);
+    gr_high_vram_written(x, y - 512, w, h);
+    return 1;
+}
+
+/* Savestates: the whole half, while it exists. */
+int gpu_high_vram_restore(const uint16_t *pixels) {
+    if (!s_hivram) return 0;
+    memcpy(s_hivram, pixels, 1024u * 512u * sizeof *s_hivram);
+    gr_high_vram_written(0, 0, 1024, 512);
+    return 1;
+}
+
+int psx_mod_gpu_high_vram_source(uint32_t address, uint32_t size) {
+    uint32_t lo = address & 0x00FFFFFFu;
+    if (!s_hivram || !size || s_hivram_nsrc >= HIVRAM_SOURCES ||
+        lo < PSX_MOD_GPU_DMA_APERTURE_BASE ||
+        size > PSX_MOD_GPU_DMA_APERTURE_BASE + PSX_MOD_GPU_DMA_APERTURE_SIZE - lo)
+        return 0;
+    s_hivram_src[s_hivram_nsrc].lo = lo;
+    s_hivram_src[s_hivram_nsrc].hi = lo + size;
+    s_hivram_nsrc++;
+    return 1;
+}
+
+static int hivram_trusted(void) {
+    uint32_t a = gp0_cmd_source_addr & 0x00FFFFFFu;
+    for (int i = 0; i < s_hivram_nsrc; i++)
+        if (a >= s_hivram_src[i].lo && a < s_hivram_src[i].hi) return 1;
+    return 0;
+}
+
+static void hivram_execute_command(uint8_t opcode) {
+    unsigned tex = 0, clut = 0;
+    if (opcode == 0xE1u) {
+        s_hivram_sprite_page = (gp0_cmd_buf[0] >> 11) & 1u;
+        gp0_cmd_buf[0] &= ~(1u << 11);      /* not the PS1's texture-disable bit */
+        gp0_execute_command_now();
+        return;
+    }
+    if (opcode >= 0x20u && opcode < 0x40u && (opcode & 4u)) {
+        unsigned step = (opcode & 0x10u) ? 3u : 2u;
+        clut = (gp0_cmd_buf[2] >> 31) & 1u;
+        tex = s_hivram_sprite_page = (gp0_cmd_buf[2u + step] >> 27) & 1u;
+    } else if (opcode >= 0x60u && opcode < 0x80u && (opcode & 4u)) {
+        clut = (gp0_cmd_buf[2] >> 31) & 1u;
+        tex = s_hivram_sprite_page;
+    }
+    if (!tex && !clut) {
+        gp0_execute_command_now();
+        return;
+    }
+    /* A backend that cannot sample the half skips the primitive. */
+    if (gr_set_high_vram(s_hivram, (int)tex, (int)clut)) {
+        s_hivram_prims++;
+        gp0_execute_command_now();
+    }
+    gr_set_high_vram(s_hivram, 0, 0);
+}
+
 /* Execute a fully-collected GP0 command */
 static void gp0_execute_command(void) {
     uint8_t opcode = (gp0_cmd_buf[0] >> 24) & 0xFF;
+    if (s_hivram_nsrc && s_hivram_in_list && hivram_trusted()) {
+        hivram_execute_command(opcode);
+        return;
+    }
     if (!tex_alias.on || opcode < 0x20u || opcode >= 0x80u || !(opcode & 4u)) {
         gp0_execute_command_now();
         return;

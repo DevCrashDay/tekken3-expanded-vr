@@ -214,14 +214,14 @@ def kind(data: bytes) -> str:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--ttt1', type=Path, required=True, help='tektagt.zip (MAME, non-merged)')
+    ap.add_argument('--ttt1', type=Path, required=True, help='tektagt.zip (MAME, non-merged, World C1, US C1 or B, Japan C1)')
     ap.add_argument('--output', type=Path, required=True, help='fresh output folder')
     args = ap.parse_args(argv)
     if args.output.exists():
         sys.exit(f'{args.output} already exists; choose a fresh output folder')
 
     sets = json.loads(arcade_model_probe.MANIFEST.read_text(encoding='utf-8'))['sets']
-    wanted = [r for r in sets['tektagt']['regions'] if r['name'] in ('maincpu:rom', 'bankedroms')]
+    wanted = [r for r in sets[arcade_model_probe.ttt_set(args.ttt1)]['regions'] if r['name'] in ('maincpu:rom', 'bankedroms')]
     regions, _ = arcade_model_probe.reconstruct(args.ttt1, {'regions': wanted})
     bank, main_rom = regions['bankedroms'], regions['maincpu:rom']
     rom, game = Rom(bank, main_rom), unpack_game(main_rom)

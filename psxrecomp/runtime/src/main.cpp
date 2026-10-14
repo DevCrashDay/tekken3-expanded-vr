@@ -1077,7 +1077,7 @@ static int           g_video_texfilter = 0; /* 0=nearest, 1=bilinear */
 static int           g_video_geometry_correction   = 0;
 static int           g_video_perspective_texturing = 0;
 static int           g_video_renderer = PSXRecompV4::DEFAULT_VIDEO_RENDERER;
-static int           g_hide_cursor    = 0;  /* [video] hide_mouse_cursor: 0 off, 1 fullscreen, 2 always, 3 idle */
+static int           g_hide_cursor    = 3;  /* [video] hide_mouse_cursor: 0 off, 1 fullscreen, 2 always, 3 idle (default) */
 static Uint32        g_cursor_last_move_ms = 0;
 static int           g_cursor_visible = 1;
 static int           g_fullscreen     = 0;  /* tri-state: 0 windowed, 1 borderless (desktop)
@@ -1165,6 +1165,14 @@ static void psx_update_mouse_cursor(SDL_Window* win, bool moved)
  * window-fullscreen flag: used both to open the window in that mode and to
  * pick the hotkey's fullscreen target. */
 static Uint32 psx_fullscreen_flag_for_mode(int mode) {
+#if defined(__ANDROID__)
+    /* A phone has no windowed mode, and the Android launcher offers no
+     * Fullscreen control: a windowed SDL window there keeps the status and
+     * navigation bars on screen over the game. Always borderless, which SDL
+     * turns into immersive full screen (bars back on a swipe only). */
+    (void)mode;
+    return SDL_WINDOW_FULLSCREEN_DESKTOP;
+#endif
     if (mode == 2) return SDL_WINDOW_FULLSCREEN;         /* exclusive */
     if (mode == 1) return SDL_WINDOW_FULLSCREEN_DESKTOP; /* borderless */
     return 0;                                            /* windowed */
@@ -5599,8 +5607,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                     Uint32 is_fs = SDL_GetWindowFlags(sdl_window) &
                                    SDL_WINDOW_FULLSCREEN;
                     if (is_fs) {
+#if !defined(__ANDROID__)   /* no windowed mode on a phone (psx_fullscreen_flag_for_mode) */
                         SDL_SetWindowFullscreen(sdl_window, 0);
                         host_osd_push("Windowed", 1500);
+#endif
                     } else {
                         /* If the configured mode is "off", the hotkey still
                          * needs a mode to switch INTO — default to borderless,
@@ -9862,6 +9872,7 @@ namespace {
         gi->has_skip_fmv = skip_fmv_offered_b ? 1 : 0;
         gi->has_turbo_loads = turbo_loads_offered_b ? 1 : 0;
         gi->has_geometry_precision = 1;
+        gi->has_mouse_cursor = 1;
         if (language_labels && num_languages > 0) {
             gi->language_labels = language_labels;
             gi->num_languages = num_languages;
@@ -11149,6 +11160,7 @@ int main(int argc, char** argv) {
             ls.output_method  = 2;  /* OpenGL */
             ls.window_scale   = std::max(1, std::min(4, g_video_win_w / 320));
             ls.fullscreen     = seed.fullscreen;
+            ls.mouse_cursor   = seed.hide_mouse_cursor;
             ls.ignore_aspect  = 0;
             ls.linear_filter  = (seed.texture_filter != 0) ? 1 : 0;
             ls.widescreen     = (seed.aspect_num == 16 && seed.aspect_den == 9) ? 1 : 0;
@@ -11372,6 +11384,7 @@ int main(int argc, char** argv) {
                     seed.has_disc_path = true;
                 }
                 seed.fullscreen    = ls.fullscreen;            seed.has_fullscreen = true;
+                seed.hide_mouse_cursor = ls.mouse_cursor;      seed.has_hide_mouse_cursor = true;
                 seed.skip_launcher = ls.skip_launcher != 0;   seed.has_skip_launcher = true;
                 /* aspect_index round-trips 0/1/2 -> 4:3 / 16:9 / 21:9, superseding the
                  * legacy ls.widescreen bool (still set above for older callers). */
@@ -11631,6 +11644,7 @@ int main(int argc, char** argv) {
                 fast_boot = seed.fast_boot;
                 bios_hle  = seed.bios_hle;
                 g_fullscreen      = seed.fullscreen;
+                g_hide_cursor     = seed.hide_mouse_cursor;
                 g_frame_interpolation = seed.frame_interpolation ? 1 : 0;
                 g_frame_interpolation_fps = seed.frame_interpolation_fps;
                 g_video_aspect_num = seed.aspect_num;
@@ -12958,6 +12972,7 @@ soft_return_lobby:
         ls.output_method = 2;
         ls.window_scale = std::max(1, std::min(4, g_video_win_w / 320));
         ls.fullscreen = g_fullscreen ? 1 : 0;
+        ls.mouse_cursor = g_hide_cursor;
         ls.ignore_aspect = 0;
         ls.linear_filter = (g_video_texfilter != 0) ? 1 : 0;
         ls.widescreen =
@@ -13237,6 +13252,8 @@ soft_return_lobby:
                 us.has_turbo_loads = turbo_loads_offered;
                 us.fullscreen = ls.fullscreen != 0;
                 us.has_fullscreen = true;
+                us.hide_mouse_cursor = ls.mouse_cursor;
+                us.has_hide_mouse_cursor = true;
                 us.window_width = ls.window_width > 0 ? ls.window_width : g_video_win_w;
                 us.has_window_width = true;
                 switch (ls.aspect_index) {
@@ -13273,6 +13290,7 @@ soft_return_lobby:
             if (skip_fmv_offered)     g_auto_skip_fmv = ls.auto_skip_fmv ? 1 : 0;
             if (turbo_loads_offered)  g_turbo_loads_enabled = ls.turbo_loads ? 1 : 0;
             g_fullscreen = ls.fullscreen != 0;
+            g_hide_cursor = ls.mouse_cursor;
             g_frame_interpolation = ls.frame_interp ? 1 : 0;
             g_frame_interpolation_fps = ls.frame_interp_fps;
             g_audio_spu_hq = ls.spu_hq != 0;
