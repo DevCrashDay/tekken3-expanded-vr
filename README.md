@@ -168,12 +168,43 @@ The Steam Deck runs the Windows build through Proton: set the game up on a Windo
 
 To update, update the folder on the PC, then copy it to the Deck again.
 
-**Natively, without Proton (untested on a Deck):** SteamOS is read-only, so the build tools go into a [Distrobox](https://distrobox.it) container, which SteamOS 3.5 and later include. In Desktop Mode, in Konsole, with the `tekken3-expanded` folder (the Linux ZIP, or `git clone`) in your home folder:
-```bash
-distrobox create --name t3x --image ubuntu:24.04
-distrobox enter t3x
-```
-Inside the container, `cd` to the folder and follow [Install on Linux](#install-on-linux-experimental) (the Ubuntu command, then `./"Setup Tekken 3.sh"`). The game it builds runs on SteamOS itself, outside the container: in Steam, **Add a Non-Steam Game** and choose `tekken3-expanded/Tekken 3 Expanded.sh`, with no compatibility tool. If you try it, please tell me in an [issue](https://github.com/omarma/tekken3-expanded/issues).
+**Natively, without Proton:** SteamOS is read-only, and packages installed on it are wiped by SteamOS updates, so the game is built inside a [Distrobox](https://distrobox.it) container. Thanks to [lexrivera](https://github.com/lexrivera) for this guide ([#111](https://github.com/omarma/tekken3-expanded/issues/111)), tested with 1.3.0.
+
+1. In Desktop Mode, open Konsole and install Distrobox in your home folder:
+   ```bash
+   curl -s https://raw.githubusercontent.com/89luca89/distrobox/main/install | sh -s -- --prefix $HOME/.local
+   ```
+   If `~/.local/bin` is not on your PATH yet, add it, then reload:
+   ```bash
+   echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bashrc
+   source ~/.bashrc
+   ```
+2. Create an Arch Linux container and enter it:
+   ```bash
+   distrobox create --name tekken-build --image archlinux:latest
+   distrobox enter tekken-build
+   ```
+3. Inside the container, update it and install the tools:
+   ```bash
+   sudo pacman -Syu
+   sudo pacman -S --needed base-devel cmake ninja git python tk sdl3 libx11 libxext libxrandr libxcursor libxi libxkbcommon libpulse alsa-lib
+   ```
+4. Download **Tekken3Expanded-x.y.z-Linux.zip** from the [latest release](https://github.com/omarma/tekken3-expanded/releases/latest) and extract it to `/home/deck/Games/tekken3-expanded`. Then, still inside the container:
+   ```bash
+   cd /home/deck/Games/tekken3-expanded
+   ./"Setup Tekken 3.sh"
+   ```
+   Choose your files as on any platform (see [Where to put your game files](#where-to-put-your-game-files)).
+5. The game needs the container's libraries, so it starts through Distrobox, not on SteamOS directly. From Konsole, outside the container:
+   ```bash
+   distrobox-enter -n tekken-build -- "/home/deck/Games/tekken3-expanded/Tekken 3 Expanded.sh"
+   ```
+6. To play in Game Mode: in Desktop Mode, open Steam, then **Games → Add a Non-Steam Game to My Library → Browse**, pick any program (Konsole, say) and add it. Right-click the new shortcut → **Properties**:
+   - **Target**: `distrobox-enter`
+   - **Launch Options**: `-n tekken-build -- "/home/deck/Games/tekken3-expanded/Tekken 3 Expanded.sh"`
+   - You can rename the shortcut **Tekken 3 Expanded**.
+
+If something goes wrong, please tell me in an [issue](https://github.com/omarma/tekken3-expanded/issues) and attach `.setup/setup.log` (a hidden folder: press Ctrl+H in Dolphin to show it).
 
 ## Android (experimental)
 
