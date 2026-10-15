@@ -23,7 +23,7 @@ body:
       options:
         - Windows
         - macOS
-        - Steam Deck (Proton)
+        - Linux
         - Android (Build Android APK)
         - Other (say which below)
     validations:

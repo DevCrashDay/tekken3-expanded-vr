@@ -16,8 +16,9 @@ body:
         - Not platform-specific
         - Windows
         - macOS
-        - Steam Deck (Proton)
+        - Linux
         - Android
+        - Other (say which below)
   - type: textarea
     id: question
     attributes:
