@@ -234,6 +234,39 @@ The first start copies the game data out of the APK, with a progress bar. Later 
 
 **If something goes wrong on the phone,** connect it by USB with USB debugging on, start the game, then run `adb logcat -d -s psxrecomp` and attach what it prints to an [issue](https://github.com/omarma/tekken3-expanded/issues). If the build itself stops, attach `.setup/setup.log` (with Build Android APK: what its window printed).
 
+## Pico 4 VR (experimental)
+
+`Build Android APK --vr` makes a VR version of the Android game for a **Pico 4** headset (OpenXR): the game plays on a big virtual screen in front of you, in stereo 3D. The 3D comes from the depth of the game's own polygons, so fighters and stages stand out of the screen while the HUD stays flat. Build it as the Android APK above, once the game is set up, from a terminal in the `tekken3-expanded` folder:
+
+- macOS: `./"Build Android APK.command" --vr`
+- Windows: `"Build Android APK.cmd" --vr`
+
+It makes `Tekken3Expanded-VR.apk`. It downloads the OpenXR loader (Khronos, from Maven Central, checked against its hashes) into `.setup/android/downloads` and builds in `build-android-vr`. Install it with `adb install -r Tekken3Expanded-VR.apk` (turn on developer mode on the headset first). It starts straight into the game; the launcher is skipped, since it is a flat window the headset does not show.
+
+**Controls** (Pico 4 controllers, player 1):
+
+| Controller | PS1 | Tekken |
+| --- | --- | --- |
+| Left stick | D-pad | Move |
+| Right trigger | Square | Left punch |
+| B | Triangle | Right punch |
+| Right grip | Cross | Left kick |
+| A | Circle | Right kick |
+| X / Y | L1 / R1 | |
+| Left trigger / left grip | L2 / R2 | |
+| Left menu button | Start | |
+| Right stick click | Select | |
+| **Left stick click** | | **VR menu** |
+
+**VR menu** (left stick click; up/down chooses, left/right changes, A selects, B or the stick click closes). The game keeps running behind it so you see each change at once, but it gets no input while the menu is open. Settings are saved when it closes.
+
+- **3D (stereo)**, **Depth strength**, **Screen plane depth** (how far the scene sits behind or in front of the screen), **2D layers (HUD) depth**, **Depth quality** and **Swap eyes**.
+- **Field of view (screen size)**, **Screen distance**, **Screen height**, **Screen follows head** (off: the screen stays in the room; on: it moves with your head) and **Recenter view**.
+- **Resolution (per eye)** and **Target FPS (refresh)**: the headset refresh rates it offers (Pico 4: 72 or 90 Hz). The game itself still runs at its own 60 frames per second; the headset tracks your head at the refresh rate.
+- **Reset VR settings**.
+
+Not yet tested on a real headset: the patch was checked on a simulated OpenXR headset (Monado) only, so expect rough edges. If it does not start, run `adb logcat -d -s psxrecomp` and attach it to an issue.
+
 ## The launcher
 
 The setup puts **Tekken 3 Expanded** (`.exe` on Windows, `.app` on macOS, `.sh` and an applications-menu entry on Linux) next to the setup script: double-click it to play; it opens the setup instead when an update needs it. **Setup Tekken 3** always opens the setup window, to set up again or change your files and options.

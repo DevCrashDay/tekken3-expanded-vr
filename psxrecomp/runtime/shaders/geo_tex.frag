@@ -13,6 +13,7 @@ layout(location = 5) flat in int   v_raw;     /* 1 = no colour modulation */
 layout(location = 6) flat in ivec4 v_limits;  /* prim uv bounds (inclusive) */
 layout(location = 7) smooth in vec2 v_uv_p;   /* perspective-correct UV */
 layout(location = 8) flat   in int  v_persp;  /* 1 = use v_uv_p, else affine */
+layout(location = 9) noperspective in float v_vz;  /* VR inverse depth, 0 = none */
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram;
 
@@ -27,6 +28,8 @@ layout(push_constant) uniform PC {
 } pc;
 
 layout(location = 0) out vec4 frag;
+/* The VR depth plane; without that attachment (no VR) the write is dropped. */
+layout(location = 1) out vec4 o_depth;
 
 int vram_at(int x, int y) {
     return int(texelFetch(u_vram, ivec2(x & 1023, y & 511), 0).r);
@@ -91,4 +94,5 @@ void main() {
     if (pc.u_semipass == 2 && stp == 0) discard;
     if (v_raw == 0) rgb = clamp(rgb * v_col.rgb * 2.0, 0.0, 1.0);
     frag = vec4(rgb, (stp == 1 || pc.u_maskset == 1) ? 1.0 : 0.0);
+    o_depth = vec4(v_vz, 0.0, 0.0, 1.0);
 }

@@ -99,6 +99,12 @@ if(BUILD_TESTING)
     target_include_directories(ws_ui_group_test PRIVATE include)
     add_test(NAME ws_ui_group_test COMMAND ws_ui_group_test)
 
+    add_executable(vr_settings_test
+        tests/test_vr_settings.c
+        src/vr_settings.c)
+    target_include_directories(vr_settings_test PRIVATE include)
+    add_test(NAME vr_settings_test COMMAND vr_settings_test)
+
     add_executable(widescreen_layer_classifier_test
         tests/test_widescreen_layer_classifier.c
         src/widescreen_layer_classifier.c)

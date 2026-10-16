@@ -39,6 +39,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 extern uint16_t psx_read_half(uint32_t addr);
 extern uint8_t  psx_read_byte(uint32_t addr);
@@ -3393,11 +3394,17 @@ extern int gte_geometry_correction_lookup(uint32_t packed,
                                           int32_t *x16, int32_t *y16);
 extern int gte_geometry_correction_enabled(void);
 static int s_texture_correction_enabled = 0;
+static int s_vr_depth_enabled = 0;
 extern void gte_precision_tracking_set(int enabled);
 
 void gpu_texture_correction_set(int enabled) {
     s_texture_correction_enabled = enabled ? 1 : 0;
-    gte_precision_tracking_set(enabled);
+    gte_precision_tracking_set(s_texture_correction_enabled || s_vr_depth_enabled);
+}
+
+void gpu_vr_depth_set(int enabled) {
+    s_vr_depth_enabled = enabled ? 1 : 0;
+    gte_precision_tracking_set(s_texture_correction_enabled || s_vr_depth_enabled);
 }
 
 uint32_t gpu_texture_correction_hits(void) {
@@ -3436,7 +3443,9 @@ static void prepare_precise_triangle(uint32_t w0, uint32_t w1, uint32_t w2,
 /* Enable perspective UVs only when every position word came from an exact
  * SWC2 projection store at that same DMA packet address. This preserves the
  * association through ordering-table reordering and rejects CPU-built UI. */
+static void prepare_vertex_depth(int i0, int i1, int i2);
 static void prepare_texture_triangle(int i0, int i1, int i2) {
+    prepare_vertex_depth(i0, i1, i2);
     gr_set_perspective_triangle(0, 0.0f, 0.0f, 0.0f);
     if (!s_texture_correction_enabled || gp0_cmd_source_addr == 0xFFFFFFFFu)
         return;
@@ -3454,6 +3463,72 @@ static void prepare_texture_triangle(int i0, int i1, int i2) {
     if (q[2] > qmax) qmax = q[2];
     if (qmax <= 0.0f) return;
     gr_set_perspective_triangle(1, q[0] / qmax, q[1] / qmax, q[2] / qmax);
+}
+
+/* ---- VR stereo depth (PSX_VR) ---------------------------------------------
+ * The renderer gets each 3D triangle's per-vertex depth from the same exact
+ * SWC2 provenance perspective texturing uses (the projection that wrote each
+ * position word of this DMA packet), as 4096/SZ: inverse depth, which
+ * interpolates linearly across the screen. Prims without it (sprites, the HUD,
+ * CPU-built UI) keep no depth and the stereo pass places them by setting.
+ *
+ * The census: each 3D triangle's mean SZ lands in a log-spaced histogram (four
+ * bins per octave from SZ 16); once per frame its median becomes the scene's
+ * reference depth, smoothed, where the stereo pass puts the screen plane. That
+ * keeps the depth effect independent of a game's own world scale. */
+#define VR_DEPTH_BINS 52              /* SZ 16 .. 65535 */
+static uint32_t s_vr_hist[VR_DEPTH_BINS];
+static uint32_t s_vr_hist_n;
+static float    s_vr_ref_log2 = 0.0f; /* log2 of the reference SZ; 0 = none yet */
+
+static int vr_depth_bin(float sz) {
+    int b = (int)(4.0f * log2f(sz < 16.0f ? 16.0f : sz)) - 16;
+    return b < 0 ? 0 : b >= VR_DEPTH_BINS ? VR_DEPTH_BINS - 1 : b;
+}
+
+static void prepare_vertex_depth(int i0, int i1, int i2) {
+    if (!s_vr_depth_enabled) return;
+    gr_set_vertex_depth(0, 0.0f, 0.0f, 0.0f);
+    if (gp0_cmd_source_addr == 0xFFFFFFFFu) return;
+    int indices[3] = { i0, i1, i2 };
+    uint16_t z[3];
+    int ok[3], n = 0;
+    float sum = 0.0f;
+    for (int i = 0; i < 3; i++) {
+        uint32_t addr = (gp0_cmd_source_addr + (uint32_t)indices[i] * 4u) & 0x1FFFFCu;
+        ok[i] = gte_precision_load_word(addr, gp0_cmd_buf[indices[i]], NULL, NULL, &z[i]) &&
+                z[i] != 0;
+        if (ok[i]) { n++; sum += (float)z[i]; }
+    }
+    if (n == 0) return;
+    /* A vertex without provenance (clipped and rebuilt by the CPU) takes the
+     * mean of the others rather than dropping the triangle's depth. */
+    const float mean = sum / (float)n;
+    float d[3];
+    for (int i = 0; i < 3; i++) d[i] = 4096.0f / (ok[i] ? (float)z[i] : mean);
+    s_vr_hist[vr_depth_bin(mean)]++;
+    s_vr_hist_n++;
+    gr_set_vertex_depth(1, d[0], d[1], d[2]);
+}
+
+void gpu_vr_depth_frame(void) {
+    if (s_vr_hist_n >= 32) {   /* a 3D frame; 2D screens keep the last reference */
+        uint32_t half = s_vr_hist_n / 2, acc = 0;
+        int bin = 0;
+        for (; bin < VR_DEPTH_BINS - 1; bin++) {
+            acc += s_vr_hist[bin];
+            if (acc >= half) break;
+        }
+        float target = ((float)bin + 16.5f) / 4.0f;
+        if (s_vr_ref_log2 == 0.0f) s_vr_ref_log2 = target;
+        else s_vr_ref_log2 += (target - s_vr_ref_log2) * 0.08f;
+    }
+    memset(s_vr_hist, 0, sizeof s_vr_hist);
+    s_vr_hist_n = 0;
+}
+
+float gpu_vr_depth_reference(void) {
+    return s_vr_ref_log2 > 0.0f ? exp2f(s_vr_ref_log2) : 0.0f;
 }
 
 /* Write a single pixel to VRAM with draw area clipping and mask bit handling */
@@ -3642,6 +3717,7 @@ static void gp0_exec_mono_tri(void) {
     gr_set_semi_transparency(semi_trans, (int)semi_transparency);
     prepare_precise_triangle(gp0_cmd_buf[1], gp0_cmd_buf[2], gp0_cmd_buf[3],
                              vx, vy);
+    prepare_vertex_depth(1, 2, 3);
     gr_draw_flat_triangle(vx[0], vy[0], vx[1], vy[1], vx[2], vy[2], color);
 }
 
@@ -3707,6 +3783,7 @@ static void gp0_exec_mono_quad(void) {
         int32_t ty[3] = { vy[0], vy[1], vy[2] };
         prepare_precise_triangle(gp0_cmd_buf[1], gp0_cmd_buf[2],
                                  gp0_cmd_buf[3], tx, ty);
+        prepare_vertex_depth(1, 2, 3);
         gr_draw_flat_triangle(vx[0], vy[0], vx[1], vy[1], vx[2], vy[2], color);
     }
     if (!rej_b) {
@@ -3714,6 +3791,7 @@ static void gp0_exec_mono_quad(void) {
         int32_t ty[3] = { vy[2], vy[1], vy[3] };
         prepare_precise_triangle(gp0_cmd_buf[3], gp0_cmd_buf[2],
                                  gp0_cmd_buf[4], tx, ty);
+        prepare_vertex_depth(3, 2, 4);
         gr_draw_flat_triangle(vx[2], vy[2], vx[1], vy[1], vx[3], vy[3], color);
     }
 }
@@ -3738,6 +3816,7 @@ static void gp0_exec_shaded_tri(void) {
     gr_set_semi_transparency(semi_trans, (int)semi_transparency);
     prepare_precise_triangle(gp0_cmd_buf[1], gp0_cmd_buf[3], gp0_cmd_buf[5],
                              vx, vy);
+    prepare_vertex_depth(1, 3, 5);
     gr_draw_gouraud_triangle(vx[0], vy[0], c[0],
                              vx[1], vy[1], c[1],
                              vx[2], vy[2], c[2]);
@@ -3787,6 +3866,7 @@ static void gp0_exec_shaded_quad(void) {
         int32_t ty[3] = { vy[0], vy[1], vy[2] };
         prepare_precise_triangle(gp0_cmd_buf[1], gp0_cmd_buf[3],
                                  gp0_cmd_buf[5], tx, ty);
+        prepare_vertex_depth(1, 3, 5);
         gr_draw_gouraud_triangle(vx[0], vy[0], c[0],
                                  vx[1], vy[1], c[1],
                                  vx[2], vy[2], c[2]);
@@ -3796,6 +3876,7 @@ static void gp0_exec_shaded_quad(void) {
         int32_t ty[3] = { vy[2], vy[1], vy[3] };
         prepare_precise_triangle(gp0_cmd_buf[5], gp0_cmd_buf[3],
                                  gp0_cmd_buf[7], tx, ty);
+        prepare_vertex_depth(5, 3, 7);
         gr_draw_gouraud_triangle(vx[2], vy[2], c[2],
                                  vx[1], vy[1], c[1],
                                  vx[3], vy[3], c[3]);

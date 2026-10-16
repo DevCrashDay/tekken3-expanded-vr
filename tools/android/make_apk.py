@@ -94,6 +94,14 @@ SHA256 = {
         "45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99",
 }
 
+# --vr: the OpenXR loader for Android (Khronos, Apache-2.0), from Maven
+# Central (its published SHA-1, and the SHA-256 of the same download).
+OPENXR_LOADER_URL = ("https://repo1.maven.org/maven2/org/khronos/openxr/openxr_loader_for_android/"
+                     "1.1.49/openxr_loader_for_android-1.1.49.aar")
+OPENXR_LOADER_SHA1 = "9c4f6d6aa6646c81edc630f609166897d0f4f5d5"
+SHA256["openxr_loader_for_android-1.1.49.aar"] = \
+    "9a731db8a21bfc5c4be47c8862a508a2e4db3d7167062dc65683cedf7563f0cd"
+
 # A portable Java for computers without one (Eclipse Temurin, a JDK: javac
 # and keytool). (host, cpu) -> (archive, sha256), from api.adoptium.net.
 JDK_RELEASE = "jdk-21.0.12.1+1"
@@ -115,6 +123,7 @@ DISC = ROOT / "disc"
 CUE = DISC / "Tekken 3 (USA).cue"
 PC_BUILD = ROOT / "build-release"
 DEFAULT_OUT = ROOT / "Tekken3Expanded.apk"
+DEFAULT_VR_OUT = ROOT / "Tekken3Expanded-VR.apk"
 ICON = ROOT / "packaging/icon.png"     # the game's icon (T3E)
 ICON_FONT = ROOT / "recomp-ui/assets/common/fonts/LatoLatin-Bold.ttf"
 ICON_COLOR = "#6E56CF"
@@ -435,13 +444,14 @@ def free_space_needed() -> int:
 
 def build(*, out: Path = DEFAULT_OUT, bios_test: bool = False, defines=(), say=report,
           run=run_command, toolchain: Path | None = None, env: dict | None = None,
-          disc_sector_log: bool = False, plain_disc: bool = False) -> Path:
+          disc_sector_log: bool = False, plain_disc: bool = False, vr: bool = False) -> Path:
     """Downloads what is missing, builds and signs the APK; returns its path.
     say(message, detail) shows progress, run(command, env) runs a build step
     (and raises when it fails); env: the environment to start from. Raises
     Stop for what the player can fix. disc_sector_log: the game records the
     disc sectors it reads (docs/android-size.md). plain_disc: the disc's
-    tracks go in as plain .bin instead of packed."""
+    tracks go in as plain .bin instead of packed. vr: the Pico 4 VR APK
+    (OpenXR; build_apk.py --vr), built in a folder of its own."""
     if not bios_test and (not GAME_MARKER.is_file() or not CUE.is_file()):
         raise Stop("Set up the game first: run Setup Tekken 3, then this.")
     TOOLS.mkdir(parents=True, exist_ok=True)
@@ -453,6 +463,8 @@ def build(*, out: Path = DEFAULT_OUT, bios_test: bool = False, defines=(), say=r
     tools = tool_folders(say)
 
     build_dir = ROOT / ("build-android-bios-test" if bios_test else "build-android")
+    if vr:
+        build_dir = build_dir.with_name(build_dir.name + "-vr")
     # The TTT1 guests: imported (workspace/, staged by the Android build
     # itself), or only in the PC build when the setup freed workspace/.
     ttt1 = ((PC_BUILD / "mods/ttt1").is_dir()
@@ -503,6 +515,9 @@ def build(*, out: Path = DEFAULT_OUT, bios_test: bool = False, defines=(), say=r
         command.append("--disc-sector-log")
     if plain_disc:
         command += ["--disc-format", "bin"]
+    if vr:
+        loader = download("OpenXR loader", OPENXR_LOADER_URL, OPENXR_LOADER_SHA1, say=say)
+        command += ["--vr", "--openxr-loader", str(loader)]
     command += [f"-D{option}" for option in defines]
     say("Building the Android game", "The first build takes a while.")
     run(command, java_env(jdk, env))
@@ -530,7 +545,7 @@ def up_to_date() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--install", action="store_true",
                         help="install it on the phone connected by USB (adb)")
     parser.add_argument("-D", dest="define", action="append", default=[],
@@ -542,13 +557,19 @@ def main() -> int:
                              "instead of losslessly packed")
     parser.add_argument("--bios-test", action="store_true",
                         help="no game needed: an APK that boots OpenBIOS (checks the tools)")
+    parser.add_argument("--vr", action="store_true",
+                        help="the VR APK for a Pico 4 headset (OpenXR): the game on a screen "
+                             "in the headset, in 3D (Tekken3Expanded-VR.apk)")
     args = parser.parse_args()
+    if args.out is None:
+        args.out = DEFAULT_VR_OUT if args.vr else DEFAULT_OUT
 
     try:
         if not args.bios_test:
             up_to_date()
         apk = build(out=args.out.resolve(), bios_test=args.bios_test, defines=args.define,
-                    disc_sector_log=args.disc_sector_log, plain_disc=args.plain_disc)
+                    disc_sector_log=args.disc_sector_log, plain_disc=args.plain_disc,
+                    vr=args.vr)
         report(f"\nAPK ready: {apk} ({apk.stat().st_size / 1e6:.0f} MB)")
         if args.install:
             report("Installing on the phone (USB debugging must be on)...")

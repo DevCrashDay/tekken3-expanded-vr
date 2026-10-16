@@ -27,6 +27,12 @@ The game (libmain.so on Android) also links:
   (zlib license), and a generated OpenGL loader (`gl_core_3_1`);
 - through psxrecomp: toml11 3.7.1 (MIT) and fmt 9.1.1 (MIT).
 
+The VR APK for the Pico 4 (`Build Android APK --vr`) also carries the OpenXR
+loader for Android 1.1.49 (`libopenxr_loader.so`, Apache-2.0, Copyright The
+Khronos Group Inc.), downloaded from Maven Central when the APK is built, and
+is compiled with the OpenXR 1.1.49 headers vendored in
+`psxrecomp/runtime/third_party/openxr` (Apache-2.0 OR MIT).
+
 Their licenses are retained in the source next to each library, or collected
 in the setup archive's `licenses/` directory.
 

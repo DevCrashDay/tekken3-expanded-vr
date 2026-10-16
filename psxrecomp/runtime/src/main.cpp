@@ -45,6 +45,9 @@ extern "C" void psx_event_step_conservative_env_init(void);
 #include "gpu_render.h"
 #include "gpu_gl_renderer.h"
 #include "gpu_vk_renderer.h"
+#if defined(PSX_VR)
+#include "vr_openxr.h"           /* headset controllers drive pad 1 */
+#endif
 #include "frame_pacing.h"
 #include "latency_ring.h"
 #include "sio.h"
@@ -4432,7 +4435,14 @@ static int capture_pad_slot(int s, PsxNetPad* out) {
     /* Opt-in dev merge: P1 is driven by the keyboard AND every connected
      * controller (PSX_DEV_INPUT=1). Default is strict per-slot routing. */
     const bool dev_here = (dev_any_input_enabled() && s == 0);
-    if (p.kind == 0 && !dev_here) return 0;  /* no device in this port */
+#if defined(PSX_VR)
+    /* In the headset its two controllers are pad 1, beside any assigned
+     * device (the VR menu holds them back while it is open). */
+    const bool vr_here = (s == 0 && psx_vr_controllers_active());
+#else
+    const bool vr_here = false;
+#endif
+    if (p.kind == 0 && !dev_here && !vr_here) return 0;  /* no device in this port */
 
     /* Resolve the pad type this frame FIRST — the effective analog/digital
      * state gates how the left stick is read for BOTH the button word and the
@@ -4475,6 +4485,10 @@ static int capture_pad_slot(int s, PsxNetPad* out) {
         btn &= pad_from_keyboard(player);
     if (src.all_pads)
         btn &= dev_all_controllers_buttons(suppress_stick);
+#if defined(PSX_VR)
+    if (vr_here)
+        btn &= psx_vr_pad_word();
+#endif
 
     /* Analog axes. Pinned-ANALOG folds the physical D-pad onto the left axes
      * (fold_dpad) so the D-pad still moves stick-only games; HYBRID feeds the
@@ -11025,6 +11039,11 @@ int main(int argc, char** argv) {
      * --no-launcher, or the persisted [launcher] skip_launcher setting — unless
      * --launcher forces it back on (mirrors snesrecomp's SkipLauncher / --launcher).
      * This removes the dismiss-the-launcher round-trip for scripted/debug runs. */
+#if defined(PSX_VR)
+    /* The VR build presents only in the headset, where the launcher's flat
+     * window is not shown: boot straight in. */
+    if (psx_vr_requested()) { force_no_launcher = true; force_launcher = false; }
+#endif
     const bool want_launcher =
         force_launcher ||
         (!std::getenv("PSX_NO_LAUNCHER") && !force_no_launcher && !skip_launcher_setting);
@@ -11792,6 +11811,10 @@ int main(int argc, char** argv) {
     /* Android draws with the OpenGL renderer on OpenGL ES, like PC. Vulkan
      * stays reachable with --renderer vulkan. */
     if (g_video_renderer == 2 && cli_renderer != 2) g_video_renderer = 1;
+#endif
+#if defined(PSX_VR)
+    /* The headset picture comes from the Vulkan renderer (vr_openxr.h). */
+    if (psx_vr_requested()) g_video_renderer = 2;
 #endif
     if (cli_window_title)    window_title     = cli_window_title;
     if (cli_memcard_dir) {

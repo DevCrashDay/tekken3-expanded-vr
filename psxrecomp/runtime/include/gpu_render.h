@@ -54,6 +54,11 @@ void gr_set_precise_triangle(int enabled,
  * perspective_texturing). q[i] is the normalized 1/z homogeneous weight at
  * vertex i. enabled == 0 restores the PS1's affine UV interpolation. */
 void gr_set_perspective_triangle(int enabled, float q0, float q1, float q2);
+/* Per-vertex depth for the NEXT triangle (VR stereo, PSX_VR): d[i] is 4096/SZ
+ * of vertex i, from its GTE projection. enabled == 0 = no depth (a 2D prim).
+ * Only the Vulkan backend's depth plane uses it; consumed by the next
+ * triangle like the overrides above. */
+void gr_set_vertex_depth(int enabled, float d0, float d1, float d2);
 
 /* Primitives */
 void gr_fill_rect(int x, int y, int w, int h, uint16_t color);
@@ -248,6 +253,8 @@ typedef struct GpuRenderBackend {
      * gr_set_high_vram). set_high_vram returns 0 when it cannot sample it. */
     int  (*set_high_vram)(const uint16_t *high, int tex_high, int clut_high);
     void (*high_vram_written)(int x, int y, int w, int h);
+    /* Optional (NULL = unsupported): see gr_set_vertex_depth. */
+    void (*set_vertex_depth)(int enabled, float d0, float d1, float d2);
 } GpuRenderBackend;
 
 #ifdef __cplusplus

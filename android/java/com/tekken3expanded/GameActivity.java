@@ -1,6 +1,8 @@
 package com.tekken3expanded;
 
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -19,6 +21,27 @@ import java.io.File;
  */
 public class GameActivity extends SDLActivity {
     static final String EXTRA_LAUNCHER = "launcher";
+    private Boolean vr;
+
+    /**
+     * The VR build (build_apk.py --vr) presents in the headset through
+     * OpenXR, where the flat in-game menu and the launcher are not shown:
+     * the VR menu (left thumbstick click) takes their place.
+     */
+    boolean isVr() {
+        if (vr == null) {
+            boolean found = false;
+            try {
+                ApplicationInfo info = getPackageManager().getApplicationInfo(
+                        getPackageName(), PackageManager.GET_META_DATA);
+                found = info.metaData != null && "vr".equals(info.metaData.getString("pvr.app.type"));
+            } catch (PackageManager.NameNotFoundException e) {
+                // our own package: always there
+            }
+            vr = found;
+        }
+        return vr;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -43,7 +66,8 @@ public class GameActivity extends SDLActivity {
     protected void onPause() {
         // Leaving the app (home, a call, the recent apps) pauses the game: it
         // comes back on the in-game menu instead of running on at once.
-        if (!isFinishing() && !LauncherBridge.isShowing() && !GameMenu.isShowing()) {
+        // Not in VR: the menu would be on the flat screen nobody sees.
+        if (!isFinishing() && !isVr() && !LauncherBridge.isShowing() && !GameMenu.isShowing()) {
             try {
                 GameMenu.show(this);
             } catch (UnsatisfiedLinkError e) {
@@ -59,7 +83,7 @@ public class GameActivity extends SDLActivity {
         if (LauncherBridge.dispatchPadKey(event)) return true;
         // In game, Back (or a pad's Home/Mode) opens the in-game menu instead
         // of closing the app; the launcher and the menu handle their own keys.
-        if (GameMenu.isMenuKey(event.getKeyCode()) && !LauncherBridge.isShowing()
+        if (GameMenu.isMenuKey(event.getKeyCode()) && !isVr() && !LauncherBridge.isShowing()
                 && !GameMenu.isShowing()) {
             if (event.getAction() == KeyEvent.ACTION_UP) GameMenu.show(this);
             return true;
