@@ -1333,6 +1333,27 @@ function(psxrecomp_add_runtime_target target)
                        "gpu_vk_renderer.c builds as an inert stub")
     endif()
 
+    # ---- VR (PSX_VR): OpenXR presentation in a headset (the Pico 4 APK) ----
+    # The picture goes to a virtual screen in the headset in stereo 3D, with an
+    # in-headset settings menu (vr_openxr.c, vr_settings.c). It rides on the
+    # Vulkan backend; the OpenXR loader is opened at runtime, so only the
+    # vendored Khronos headers are needed here.
+    option(PSX_VR "Present in an OpenXR headset (needs the Vulkan backend)" OFF)
+    if(PSX_VR)
+        if(NOT PSX_ENABLE_VULKAN OR NOT _vk_inc OR NOT GLSLC_EXE)
+            message(FATAL_ERROR "PSX_VR needs the Vulkan backend (Vulkan headers + glslc)")
+        endif()
+        target_sources(${target} PRIVATE
+            ${PSXRECOMP_ROOT}/runtime/src/vr_settings.c
+            ${PSXRECOMP_ROOT}/runtime/src/vr_openxr.c)
+        target_include_directories(${target} PRIVATE
+            "${PSXRECOMP_ROOT}/runtime/third_party/openxr/include")
+        target_compile_definitions(${target} PRIVATE PSX_VR=1)
+        find_package(Threads REQUIRED)
+        target_link_libraries(${target} PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+        message(STATUS "VR: OpenXR presentation enabled (PSX_VR)")
+    endif()
+
     # Prefer BSS for zero-init data. MinGW+LTO has emitted multi‑MiB rings into
     # .rdata as stored zeros (~150MiB MotK .exe bloat); pair with PSX_BSS on the
     # largest arrays (see runtime/include/psx_bss.h).

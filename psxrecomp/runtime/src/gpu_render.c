@@ -191,6 +191,10 @@ void gr_set_perspective_triangle(int enabled, float q0, float q1, float q2) {
     if (g_b->set_perspective_triangle)
         g_b->set_perspective_triangle(enabled, q0, q1, q2);
 }
+void gr_set_vertex_depth(int enabled, float d0, float d1, float d2) {
+    if (g_b->set_vertex_depth)
+        g_b->set_vertex_depth(enabled, d0, d1, d2);
+}
 void gr_fill_rect(int x, int y, int w, int h, uint16_t c)  { watch_rect(x, y, w, h); g_b->fill_rect(x, y, w, h, c); }
 void gr_copy_rect(int sx, int sy, int dx, int dy, int w, int h) { watch_rect(dx, dy, w, h); g_b->copy_rect(sx, sy, dx, dy, w, h); }
 void gr_draw_flat_triangle(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t c) {

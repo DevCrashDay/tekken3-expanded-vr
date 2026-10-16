@@ -451,17 +451,60 @@ def compile_icon(args, work: Path) -> Path:
     return compiled
 
 
+# --vr: what a Pico 4 (or another standalone OpenXR headset) needs to start
+# the app in the headset instead of as a flat window: the immersive category
+# on the launcher activity, the OpenXR loader's permissions and queries (it
+# finds the runtime through them), head tracking, and Pico's VR app marker
+# (GameActivity reads it to leave out the flat in-game menu).
+VR_MANIFEST = """
+    <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" android:version="1" />
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
+    <queries>
+        <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker" />
+        <intent>
+            <action android:name="org.khronos.openxr.OpenXRRuntimeService" />
+        </intent>
+    </queries>
+"""
+VR_APPLICATION = """
+        <meta-data android:name="pvr.app.type" android:value="vr" />
+"""
+VR_CATEGORY = """
+                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />"""
+LAUNCHER_CATEGORY = '<category android:name="android.intent.category.LAUNCHER" />'
+# The OpenXR loader for Android (Khronos, Apache-2.0), from Maven Central.
+OPENXR_LOADER_SO = f"jni/{ABI}/libopenxr_loader.so"
+
+
+def vr_manifest(text: str) -> str:
+    for anchor in ('    <uses-permission android:name="android.permission.VIBRATE" />\n',
+                   '        android:hardwareAccelerated="true">\n', LAUNCHER_CATEGORY):
+        if text.count(anchor) != 1:
+            raise SystemExit(f"--vr: AndroidManifest.xml changed ({anchor.strip()} not found once)")
+    text = text.replace('    <uses-permission android:name="android.permission.VIBRATE" />\n',
+                        '    <uses-permission android:name="android.permission.VIBRATE" />\n'
+                        + VR_MANIFEST.lstrip("\n"))
+    text = text.replace('        android:hardwareAccelerated="true">\n',
+                        '        android:hardwareAccelerated="true">\n' + VR_APPLICATION.lstrip("\n"))
+    return text.replace(LAUNCHER_CATEGORY, LAUNCHER_CATEGORY + VR_CATEGORY)
+
+
 def manifest(args, work: Path) -> Path:
-    """The manifest; without --icon, without its icon (no resource to point to)."""
+    """The manifest; without --icon, without its icon (no resource to point to);
+    with --vr, the headset's additions (vr_manifest)."""
     source = ANDROID / "AndroidManifest.xml"
-    if args.icon:
+    text = source.read_text(encoding="utf-8").replace("\r\n", "\n")
+    changed = text
+    if not args.icon:
+        changed = changed.replace(ICON_ATTRIBUTE, "")
+    if args.vr:
+        changed = vr_manifest(changed)
+    if changed == text:
         return source
-    text = source.read_text(encoding="utf-8")
-    if ICON_ATTRIBUTE not in text:
-        return source
-    stripped = work / "AndroidManifest.xml"
-    stripped.write_text(text.replace(ICON_ATTRIBUTE, ""), encoding="utf-8")
-    return stripped
+    written = work / "AndroidManifest.xml"
+    written.write_text(changed, encoding="utf-8")
+    return written
 
 
 def link_apk(args, assets: Path, work: Path) -> Path:
@@ -481,7 +524,23 @@ def link_apk(args, assets: Path, work: Path) -> Path:
     return unsigned
 
 
-def add_code(unsigned: Path, dex: Path, library: Path, strip: Path, work: Path) -> None:
+def openxr_loader(path: Path, work: Path) -> Path:
+    """libopenxr_loader.so from --openxr-loader: the .so itself, or the
+    loader's AAR (openxr_loader_for_android-<version>.aar), which holds it."""
+    if path.suffix == ".so":
+        return path
+    try:
+        with zipfile.ZipFile(path) as aar:
+            data = aar.read(OPENXR_LOADER_SO)
+    except (OSError, zipfile.BadZipFile, KeyError) as error:
+        raise SystemExit(f"--openxr-loader {path}: no {OPENXR_LOADER_SO} in it ({error})")
+    loader = work / "libopenxr_loader.so"
+    loader.write_bytes(data)
+    return loader
+
+
+def add_code(unsigned: Path, dex: Path, library: Path, strip: Path, work: Path,
+             extra_libraries: tuple[Path, ...] = ()) -> None:
     stripped = work / "libmain.so"
     run([strip, "--strip-unneeded", "-o", stripped, library])
     with zipfile.ZipFile(unsigned, "a") as apk:
@@ -489,6 +548,8 @@ def add_code(unsigned: Path, dex: Path, library: Path, strip: Path, work: Path) 
         # Stored, so Android maps it straight from the APK
         # (extractNativeLibs=false); zipalign -P 16 aligns it to 16 KB pages.
         apk.write(stripped, f"lib/{ABI}/libmain.so", compress_type=zipfile.ZIP_STORED)
+        for extra in extra_libraries:
+            apk.write(extra, f"lib/{ABI}/{extra.name}", compress_type=zipfile.ZIP_STORED)
 
 
 # The signing password reaches keytool and apksigner through this variable,
@@ -573,7 +634,17 @@ def main() -> int:
                              "in <build-dir>/apk (deleted by default)")
     parser.add_argument("--no-game-config", action="store_true",
                         help="leave game.toml out (a BIOS-only test needs no disc)")
+    parser.add_argument("--vr", action="store_true",
+                        help="the VR APK for a Pico 4 (OpenXR, -DPSX_VR=ON): the game on a "
+                             "screen in the headset, in 3D; needs --openxr-loader")
+    parser.add_argument("--openxr-loader", type=Path,
+                        help="--vr: the OpenXR loader for Android, its AAR or "
+                             "libopenxr_loader.so (make_apk.py --vr downloads it)")
     args = parser.parse_args()
+    if args.vr:
+        if not args.openxr_loader or not args.openxr_loader.is_file():
+            raise SystemExit("--vr needs --openxr-loader (the loader's AAR or .so)")
+        args.define.append("PSX_VR=ON")
 
     build_dir = args.build_dir.resolve()
     check_paths_for_cmd(ROOT, build_dir, args.build_tools, args.out.resolve(),
@@ -586,7 +657,8 @@ def main() -> int:
     assets = stage_data(args, build_dir, work)
     unsigned = link_apk(args, assets, work)
     strip = tool(args.ndk / "toolchains/llvm/prebuilt" / ndk_host_tag() / "bin", "llvm-strip")
-    add_code(unsigned, dex, library, strip, work)
+    extra = (openxr_loader(args.openxr_loader, work),) if args.vr else ()
+    add_code(unsigned, dex, library, strip, work, extra)
 
     aligned = work / "aligned.apk"
     run([tool(args.build_tools, "zipalign"), "-P", "16", "-f", "4", unsigned, aligned])

@@ -17,6 +17,8 @@ layout(location = 7) in vec4  a_limits;
  * PS1-faithful default: w below is then exactly 1.0 and the fragment shader
  * reads the noperspective varying, i.e. the pre-feature pipeline unchanged. */
 layout(location = 8) in float a_q;
+/* VR depth plane (PSX_VR): inverse depth 4096/SZ, 0 for 2D prims. */
+layout(location = 9) in float a_vz;
 
 layout(push_constant) uniform PC {
     float u_shift;
@@ -37,9 +39,11 @@ layout(location = 5) flat out int   v_raw;
 layout(location = 6) flat out ivec4 v_limits;
 layout(location = 7) smooth out vec2 v_uv_p;   /* perspective-correct UV */
 layout(location = 8) flat   out int  v_persp;
+layout(location = 9) noperspective out float v_vz;
 
 void main() {
     v_uv = a_uv; v_uv_p = a_uv; v_col = a_col;
+    v_vz = a_vz;
     v_persp = (a_q > 0.0) ? 1 : 0;
     v_tpage = ivec2(a_tpage + 0.5);
     v_clut  = ivec2(a_clut + 0.5);

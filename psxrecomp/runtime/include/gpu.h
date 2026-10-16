@@ -324,6 +324,15 @@ int  psx_ws_auto_cull_on(void);
 void gpu_texture_correction_set(int enabled);
 /* Triangles drawn with perspective-correct UVs since startup. */
 uint32_t gpu_texture_correction_hits(void);
+/* VR stereo depth (PSX_VR): hand each 3D triangle's per-vertex GTE depth to
+ * the renderer (gr_set_vertex_depth), with the same SWC2 provenance as
+ * perspective texturing, and keep a per-frame depth census of the scene.
+ * gpu_vr_depth_reference() is the scene's reference depth (SZ) the screen
+ * plane sits at, smoothed over frames; gpu_vr_depth_frame() closes a frame's
+ * census (call once per presented frame). */
+void  gpu_vr_depth_set(int enabled);
+void  gpu_vr_depth_frame(void);
+float gpu_vr_depth_reference(void);
 /* GTE-activity gameplay detector ([widescreen] gte_game_mode) for 3D titles
  * with no sprite-tag helper: gte.cpp notes every RTPS/RTPT projection; a frame
  * that projects enough vertices is stamped as gameplay. */

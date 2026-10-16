@@ -14,6 +14,8 @@ layout(push_constant) uniform PC {
     ivec4 u_rect;       /* unused in frag; keeps the block layout in sync */
 } pc;
 layout(location = 0) out vec4 frag;
+/* The VR depth plane: uploads, fills and copies carry no depth. */
+layout(location = 1) out vec4 o_depth;
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
     vec4 c = texelFetch(u_src, p / pc.u_src_div + pc.u_src_off, 0);
@@ -21,4 +23,5 @@ void main() {
     if (pc.u_stp_pass == 1 && stp) discard;
     if (pc.u_stp_pass == 2 && !stp) discard;
     frag = vec4(c.rgb, (stp || pc.u_maskset != 0) ? 1.0 : 0.0);
+    o_depth = vec4(0.0);
 }

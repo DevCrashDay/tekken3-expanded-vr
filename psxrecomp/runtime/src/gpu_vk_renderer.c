@@ -57,7 +57,11 @@ const GpuRenderBackend *vk_backend_get(void) { return 0; }
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include "vk_shaders_spv.h"   /* generated: spv_geo_vert/frag, spv_geo_tex_vert/frag,
-                               *            spv_pack_comp, spv_blit_vert/frag */
+                               *            spv_pack_comp, spv_blit_vert/frag,
+                               *            spv_stereo_vert/frag */
+#if defined(PSX_VR)
+#include "vr_openxr.h"
+#endif
 
 #define VRAM_W 1024
 #define VRAM_H 512
@@ -80,11 +84,16 @@ static PFN_vkGetDeviceProcAddr   p_vkGetDeviceProcAddr;
     X(vkGetPhysicalDeviceQueueFamilyProperties) \
     X(vkGetPhysicalDeviceMemoryProperties) \
     X(vkGetPhysicalDeviceFormatProperties) \
+    X(vkGetPhysicalDeviceFeatures) \
+    X(vkCreateDevice)
+
+/* Window-surface entry points: not loaded in VR, where the headset's
+ * compositor presents and the instance has no surface extension. */
+#define VK_SURFACE_FUNCS(X) \
     X(vkGetPhysicalDeviceSurfaceSupportKHR) \
     X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
     X(vkGetPhysicalDeviceSurfaceFormatsKHR) \
     X(vkGetPhysicalDeviceSurfacePresentModesKHR) \
-    X(vkCreateDevice) \
     X(vkDestroySurfaceKHR)
 
 #define VK_DEVICE_FUNCS(X) \
@@ -92,11 +101,6 @@ static PFN_vkGetDeviceProcAddr   p_vkGetDeviceProcAddr;
     X(vkGetDeviceQueue) \
     X(vkDeviceWaitIdle) \
     X(vkQueueWaitIdle) \
-    X(vkCreateSwapchainKHR) \
-    X(vkDestroySwapchainKHR) \
-    X(vkGetSwapchainImagesKHR) \
-    X(vkAcquireNextImageKHR) \
-    X(vkQueuePresentKHR) \
     X(vkCreateImageView) \
     X(vkDestroyImageView) \
     X(vkCreateImage) \
@@ -165,14 +169,30 @@ static PFN_vkGetDeviceProcAddr   p_vkGetDeviceProcAddr;
     X(vkCmdDraw) \
     X(vkCmdClearAttachments)
 
+#define VK_SWAPCHAIN_FUNCS(X) \
+    X(vkCreateSwapchainKHR) \
+    X(vkDestroySwapchainKHR) \
+    X(vkGetSwapchainImagesKHR) \
+    X(vkAcquireNextImageKHR) \
+    X(vkQueuePresentKHR)
+
 #define DECL_FP(n) static PFN_##n p_##n;
 VK_GLOBAL_FUNCS(DECL_FP)
 VK_INSTANCE_FUNCS(DECL_FP)
+VK_SURFACE_FUNCS(DECL_FP)
 VK_DEVICE_FUNCS(DECL_FP)
+VK_SWAPCHAIN_FUNCS(DECL_FP)
 #undef DECL_FP
 
 /* ---- state ------------------------------------------------------------- */
 static SDL_Window      *s_win;
+/* VR (PSX_VR builds with a headset): OpenXR created the instance/device and
+ * the headset's compositor presents; there is no window surface/swapchain. */
+static int              s_vr;
+/* The VR depth plane: an R16F colour attachment beside each colour target
+ * holding the inverse depth the geometry passes write (stereo.frag reads it).
+ * Needs independentBlend, so its writes stay unblended under PS1 blending. */
+static int              s_zp;
 static VkInstance       s_instance;
 static VkSurfaceKHR     s_surface;
 static VkPhysicalDevice s_phys;
@@ -277,6 +297,12 @@ static VkDeviceMemory  s_ds_mem;
 static VkImageView     s_ds_view;
 static VkFormat        s_ds_format;
 
+/* The VR depth plane of the canonical target (s_zp only). */
+static VkImage         s_zp_img;
+static VkDeviceMemory  s_zp_mem;
+static VkImageView     s_zp_view;
+static VkImageLayout   s_zp_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
 /* Scratch hr image for VRAM->VRAM copies (resolves overlap). */
 static VkImage         s_scratch_img;
 static VkDeviceMemory  s_scratch_mem;
@@ -307,6 +333,10 @@ static VkImage        s_wide_ds_img[VK_WIDE_MAX_SURF];
 static VkDeviceMemory s_wide_ds_mem[VK_WIDE_MAX_SURF];
 static VkImageView    s_wide_ds_view[VK_WIDE_MAX_SURF];
 static VkFramebuffer  s_wide_fb[VK_WIDE_MAX_SURF];
+static VkImage        s_wide_zp_img[VK_WIDE_MAX_SURF];    /* VR depth plane (s_zp) */
+static VkDeviceMemory s_wide_zp_mem[VK_WIDE_MAX_SURF];
+static VkImageView    s_wide_zp_view[VK_WIDE_MAX_SURF];
+static VkImageLayout  s_wide_zp_layout[VK_WIDE_MAX_SURF];
 static VkImageLayout  s_wide_layout[VK_WIDE_MAX_SURF];
 static int            s_wide_base[VK_WIDE_MAX_SURF] = { -1, -1, -1, -1 };
 static int            s_wide_w = 0;        /* wide width (native px); 0 = disabled */
@@ -385,7 +415,7 @@ static VkPipeline s_pipe_cache[PIPE_CACHE_N];
 static VkShaderModule s_mod_geo_v, s_mod_geo_f, s_mod_tex_v, s_mod_tex_f, s_mod_blit_v, s_mod_blit_f;
 
 /* Untextured batch (flat/gouraud triangles, lines-as-quads, flat rects). */
-typedef struct { float x, y, r, g, b, a; } Vert;   /* GEO vertex, stride 24 */
+typedef struct { float x, y, r, g, b, a, z; } Vert;   /* GEO vertex, stride 28 (z: VR depth) */
 #define VK_VBUF_VERTS 65536
 static VkBuffer       s_vbuf;
 static VkDeviceMemory s_vbuf_mem;
@@ -412,11 +442,14 @@ static int   s_pc_valid = 0;           /* sub-pixel positions present */
 static float s_pc_x[3], s_pc_y[3];     /* native VRAM px, fractional  */
 static int   s_pq_valid = 0;           /* perspective weights present */
 static float s_pq[3];
+static int   s_vz_valid = 0;           /* VR inverse depth per vertex present */
+static float s_vz[3];
 
-/* Textured batch: 19 floats/vert (pos,uv,col,tpage,clut,depth,raw,limits,q).
+/* Textured batch: 20 floats/vert (pos,uv,col,tpage,clut,depth,raw,limits,q,vz).
  * q is the perspective weight ([video] perspective_texturing); 0 = affine,
- * which the vertex shader turns into w == 1.0 — the faithful default. */
-#define TEXV 19
+ * which the vertex shader turns into w == 1.0 — the faithful default. vz is
+ * the VR depth plane's inverse depth (0 = none). */
+#define TEXV 20
 typedef struct { float v[TEXV]; } TexVert;
 #define VK_TBUF_VERTS 24576               /* multiple of 3 */
 static VkBuffer       s_tbuf;
@@ -719,36 +752,88 @@ static int load_global_funcs(void) {
 static int load_instance_funcs(void) {
 #define LOAD(n) p_##n = (PFN_##n)p_vkGetInstanceProcAddr(s_instance, #n); if (!p_##n) return vk_die("missing " #n);
     VK_INSTANCE_FUNCS(LOAD)
+    if (!s_vr) { VK_SURFACE_FUNCS(LOAD) }
 #undef LOAD
     p_vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)
         p_vkGetInstanceProcAddr(s_instance, "vkGetDeviceProcAddr");
     return p_vkGetDeviceProcAddr ? 1 : vk_die("missing vkGetDeviceProcAddr");
 }
+#if defined(PSX_VR)
+/* VR: the queue is shared with the OpenXR runtime, so every submit / wait
+ * goes through its lock (see vr_openxr.h). A wait-idle becomes an empty
+ * submit with a fence, waited for outside the lock, so the headset thread is
+ * never held up for the length of the GPU work. */
+static PFN_vkQueueSubmit   s_real_submit;
+static PFN_vkQueueWaitIdle s_real_wait_idle;
+static PFN_vkDeviceWaitIdle s_real_dev_wait_idle;
+static VkFence             s_idle_fence;
+static VKAPI_ATTR VkResult VKAPI_CALL vr_queue_submit(VkQueue q, uint32_t n,
+                                                      const VkSubmitInfo *si, VkFence f) {
+    psx_vr_queue_lock();
+    VkResult r = s_real_submit(q, n, si, f);
+    psx_vr_queue_unlock();
+    return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL vr_queue_wait_idle(VkQueue q) {
+    if (!s_idle_fence) {
+        VkFenceCreateInfo fi = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+        if (p_vkCreateFence(s_dev, &fi, NULL, &s_idle_fence) != VK_SUCCESS) {
+            psx_vr_queue_lock();
+            VkResult r = s_real_wait_idle(q);
+            psx_vr_queue_unlock();
+            return r;
+        }
+    }
+    psx_vr_queue_lock();
+    VkResult r = s_real_submit(q, 0, NULL, s_idle_fence);
+    psx_vr_queue_unlock();
+    if (r != VK_SUCCESS) return r;
+    r = p_vkWaitForFences(s_dev, 1, &s_idle_fence, VK_TRUE, UINT64_MAX);
+    p_vkResetFences(s_dev, 1, &s_idle_fence);
+    return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL vr_device_wait_idle(VkDevice d) {
+    psx_vr_queue_lock();
+    VkResult r = s_real_dev_wait_idle(d);
+    psx_vr_queue_unlock();
+    return r;
+}
+#endif
+
 static int load_device_funcs(void) {
 #define LOAD(n) p_##n = (PFN_##n)p_vkGetDeviceProcAddr(s_dev, #n); if (!p_##n) return vk_die("missing " #n);
     VK_DEVICE_FUNCS(LOAD)
+    if (!s_vr) { VK_SWAPCHAIN_FUNCS(LOAD) }
 #undef LOAD
+#if defined(PSX_VR)
+    if (s_vr) {
+        s_real_submit = p_vkQueueSubmit;          p_vkQueueSubmit = vr_queue_submit;
+        s_real_wait_idle = p_vkQueueWaitIdle;     p_vkQueueWaitIdle = vr_queue_wait_idle;
+        s_real_dev_wait_idle = p_vkDeviceWaitIdle; p_vkDeviceWaitIdle = vr_device_wait_idle;
+    }
+#endif
     return 1;
 }
 
 /* ---- instance / device / swapchain ------------------------------------- */
 static int create_instance(void) {
     unsigned ext_count = 0;
+    const char *exts[16];
+    if (!s_vr) {   /* VR presents through OpenXR: no window surface */
 #if defined(PSX_SDL3)
-    const char *const *sdl_exts = SDL_Vulkan_GetInstanceExtensions(&ext_count);
-    if (!sdl_exts)
-        return vk_die("SDL_Vulkan_GetInstanceExtensions failed");
-    const char *exts[16];
-    if (ext_count > 16) ext_count = 16;
-    for (unsigned i = 0; i < ext_count; ++i) exts[i] = sdl_exts[i];
+        const char *const *sdl_exts = SDL_Vulkan_GetInstanceExtensions(&ext_count);
+        if (!sdl_exts)
+            return vk_die("SDL_Vulkan_GetInstanceExtensions failed");
+        if (ext_count > 16) ext_count = 16;
+        for (unsigned i = 0; i < ext_count; ++i) exts[i] = sdl_exts[i];
 #else
-    if (!SDL_Vulkan_GetInstanceExtensions(s_win, &ext_count, NULL))
-        return vk_die("SDL_Vulkan_GetInstanceExtensions(count) failed");
-    const char *exts[16];
-    if (ext_count > 16) ext_count = 16;
-    if (!SDL_Vulkan_GetInstanceExtensions(s_win, &ext_count, exts))
-        return vk_die("SDL_Vulkan_GetInstanceExtensions(list) failed");
+        if (!SDL_Vulkan_GetInstanceExtensions(s_win, &ext_count, NULL))
+            return vk_die("SDL_Vulkan_GetInstanceExtensions(count) failed");
+        if (ext_count > 16) ext_count = 16;
+        if (!SDL_Vulkan_GetInstanceExtensions(s_win, &ext_count, exts))
+            return vk_die("SDL_Vulkan_GetInstanceExtensions(list) failed");
 #endif
+    }
 
     VkApplicationInfo app = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
     app.pApplicationName = "psxrecomp";
@@ -756,13 +841,44 @@ static int create_instance(void) {
     VkInstanceCreateInfo ci = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
     ci.pApplicationInfo = &app;
     ci.enabledExtensionCount = ext_count;
-    ci.ppEnabledExtensionNames = exts;
+    ci.ppEnabledExtensionNames = ext_count ? exts : NULL;
+#if defined(PSX_VR)
+    if (s_vr) {
+        if (psx_vr_create_vk_instance(p_vkGetInstanceProcAddr, &ci, &s_instance) != VK_SUCCESS)
+            return vk_die("vkCreateInstance (OpenXR) failed");
+        return 1;
+    }
+#endif
     if (p_vkCreateInstance(&ci, NULL, &s_instance) != VK_SUCCESS)
         return vk_die("vkCreateInstance failed");
     return 1;
 }
 
+#if defined(PSX_VR)
+/* VR: the headset's GPU, with the first graphics queue family. */
+static int pick_vr_device(void) {
+    if (psx_vr_vk_physical_device(s_instance, &s_phys) != VK_SUCCESS || !s_phys)
+        return vk_die("no Vulkan device for the headset");
+    uint32_t qn = 0;
+    p_vkGetPhysicalDeviceQueueFamilyProperties(s_phys, &qn, NULL);
+    if (qn > 16) qn = 16;
+    VkQueueFamilyProperties qf[16];
+    p_vkGetPhysicalDeviceQueueFamilyProperties(s_phys, &qn, qf);
+    uint32_t f = 0;
+    while (f < qn && !(qf[f].queueFlags & VK_QUEUE_GRAPHICS_BIT)) f++;
+    if (f == qn) return vk_die("headset GPU has no graphics queue");
+    s_qfam = f;
+    p_vkGetPhysicalDeviceMemoryProperties(s_phys, &s_memprops);
+    VkPhysicalDeviceProperties pr; p_vkGetPhysicalDeviceProperties(s_phys, &pr);
+    fprintf(stdout, "psxrecomp: vulkan: device = %s (VR)\n", pr.deviceName);
+    return 1;
+}
+#endif
+
 static int pick_device(void) {
+#if defined(PSX_VR)
+    if (s_vr) return pick_vr_device();
+#endif
     uint32_t n = 0;
     p_vkEnumeratePhysicalDevices(s_instance, &n, NULL);
     if (!n) return vk_die("no Vulkan physical devices");
@@ -803,7 +919,21 @@ static int create_device(void) {
     const char *dev_exts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
     VkDeviceCreateInfo ci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     ci.queueCreateInfoCount = 1; ci.pQueueCreateInfos = &q;
-    ci.enabledExtensionCount = 1; ci.ppEnabledExtensionNames = dev_exts;
+    ci.enabledExtensionCount = s_vr ? 0 : 1; ci.ppEnabledExtensionNames = s_vr ? NULL : dev_exts;
+#if defined(PSX_VR)
+    if (s_vr) {
+        /* The depth plane's unblended writes beside the blended colour need
+         * independentBlend (Adreno has it); without it VR stays flat 3D-less. */
+        VkPhysicalDeviceFeatures have, want;
+        memset(&want, 0, sizeof want);
+        p_vkGetPhysicalDeviceFeatures(s_phys, &have);
+        want.independentBlend = have.independentBlend;
+        s_zp = have.independentBlend ? 1 : 0;
+        ci.pEnabledFeatures = &want;
+        if (psx_vr_create_vk_device(p_vkGetInstanceProcAddr, s_phys, &ci, &s_dev) != VK_SUCCESS)
+            return vk_die("vkCreateDevice (OpenXR) failed");
+    } else
+#endif
     if (p_vkCreateDevice(s_phys, &ci, NULL, &s_dev) != VK_SUCCESS)
         return vk_die("vkCreateDevice failed");
     if (!load_device_funcs()) return 0;
@@ -1071,6 +1201,10 @@ static int create_render_targets(void) {
     if (!make_image(VK_FORMAT_R8G8B8A8_UNORM, VRAM_W, VRAM_H,
                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, &s_up_img, &s_up_mem, &s_up_view)) return 0;
+    if (s_zp && !make_image(VK_FORMAT_R16_SFLOAT, VRAM_W * S, VRAM_H * S,
+                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            VK_IMAGE_ASPECT_COLOR_BIT, &s_zp_img, &s_zp_mem, &s_zp_view)) return 0;
 
     /* Clear raw mirror to 0 (park sampled) and stencil to 0 (park attachment). */
     {
@@ -1080,6 +1214,11 @@ static int create_render_targets(void) {
         VkImageSubresourceRange crng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         p_vkCmdClearColorImage(cb, s_raw_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &crng);
         img_to(cb, s_raw_img, &s_raw_layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (s_zp) {   /* depth plane: 0 = no depth (flat), parked as an attachment */
+            img_to(cb, s_zp_img, &s_zp_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            p_vkCmdClearColorImage(cb, s_zp_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &crng);
+            img_to(cb, s_zp_img, &s_zp_layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        }
 
         VkImageMemoryBarrier db = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         db.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; db.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -1101,33 +1240,38 @@ static int create_render_targets(void) {
         end_oneshot(cb);
     }
 
-    /* Render pass: color (hr, load/store) + depth-stencil (stencil load/store). */
-    VkAttachmentDescription att[2] = {0};
+    /* Render pass: color (hr, load/store) [+ VR depth plane] + depth-stencil
+     * (stencil load/store). */
+    const uint32_t ncol = s_zp ? 2u : 1u;
+    VkAttachmentDescription att[3] = {0};
     att[0].format = VK_FORMAT_R8G8B8A8_UNORM; att[0].samples = VK_SAMPLE_COUNT_1_BIT;
     att[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; att[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     att[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; att[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     att[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     att[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    att[1].format = s_ds_format; att[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    att[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; att[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    att[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD; att[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
-    att[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    att[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    VkAttachmentReference cref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
-    VkAttachmentReference dref = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+    if (s_zp) { att[1] = att[0]; att[1].format = VK_FORMAT_R16_SFLOAT; }
+    att[ncol].format = s_ds_format; att[ncol].samples = VK_SAMPLE_COUNT_1_BIT;
+    att[ncol].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; att[ncol].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att[ncol].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD; att[ncol].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+    att[ncol].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    att[ncol].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference cref[2] = { { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+                                      { 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } };
+    VkAttachmentReference dref = { ncol, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
     VkSubpassDescription sub = {0};
     sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    sub.colorAttachmentCount = 1; sub.pColorAttachments = &cref;
+    sub.colorAttachmentCount = ncol; sub.pColorAttachments = cref;
     sub.pDepthStencilAttachment = &dref;
     VkRenderPassCreateInfo rpi = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-    rpi.attachmentCount = 2; rpi.pAttachments = att;
+    rpi.attachmentCount = ncol + 1; rpi.pAttachments = att;
     rpi.subpassCount = 1; rpi.pSubpasses = &sub;
     if (p_vkCreateRenderPass(s_dev, &rpi, NULL, &s_rpass) != VK_SUCCESS)
         return vk_die("render pass failed");
 
-    VkImageView fbviews[2] = { s_vram_view, s_ds_view };
+    VkImageView fbviews[3] = { s_vram_view, s_ds_view, VK_NULL_HANDLE };
+    if (s_zp) { fbviews[1] = s_zp_view; fbviews[2] = s_ds_view; }
     VkFramebufferCreateInfo fi = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-    fi.renderPass = s_rpass; fi.attachmentCount = 2; fi.pAttachments = fbviews;
+    fi.renderPass = s_rpass; fi.attachmentCount = ncol + 1; fi.pAttachments = fbviews;
     fi.width = VRAM_W * S; fi.height = VRAM_H * S; fi.layers = 1;
     if (p_vkCreateFramebuffer(s_dev, &fi, NULL, &s_fbo) != VK_SUCCESS)
         return vk_die("framebuffer failed");
@@ -1253,13 +1397,14 @@ static VkPipeline get_pipeline(int prog, int topo, int blend, int stencil, int c
 
     VkShaderModule vs, fs; VkPipelineLayout layout;
     VkVertexInputBindingDescription bind = {0};
-    VkVertexInputAttributeDescription attrs[9]; uint32_t nattr;
+    VkVertexInputAttributeDescription attrs[10]; uint32_t nattr;
     if (prog == 0) {            /* GEO */
         vs = s_mod_geo_v; fs = s_mod_geo_f; layout = s_pl_geo;
         bind = (VkVertexInputBindingDescription){ 0, sizeof(Vert), VK_VERTEX_INPUT_RATE_VERTEX };
         attrs[0] = (VkVertexInputAttributeDescription){ 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 };
         attrs[1] = (VkVertexInputAttributeDescription){ 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 8 };
-        nattr = 2;
+        attrs[2] = (VkVertexInputAttributeDescription){ 2, 0, VK_FORMAT_R32_SFLOAT, 24 };  /* VR depth */
+        nattr = 3;
     } else if (prog == 1) {     /* TEX */
         vs = s_mod_tex_v; fs = s_mod_tex_f; layout = s_pl_tex;
         bind = (VkVertexInputBindingDescription){ 0, sizeof(TexVert), VK_VERTEX_INPUT_RATE_VERTEX };
@@ -1272,7 +1417,8 @@ static VkPipeline get_pipeline(int prog, int topo, int blend, int stencil, int c
         attrs[6] = (VkVertexInputAttributeDescription){ 6, 0, VK_FORMAT_R32_SFLOAT, 52 };
         attrs[7] = (VkVertexInputAttributeDescription){ 7, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 56 };
         attrs[8] = (VkVertexInputAttributeDescription){ 8, 0, VK_FORMAT_R32_SFLOAT, 72 };  /* a_q */
-        nattr = 9;
+        attrs[9] = (VkVertexInputAttributeDescription){ 9, 0, VK_FORMAT_R32_SFLOAT, 76 };  /* a_vz */
+        nattr = 10;
     } else {                    /* BLIT (vertex-less: rect from push constant) */
         vs = s_mod_blit_v; fs = s_mod_blit_f; layout = s_pl_blit;
         nattr = 0;
@@ -1330,8 +1476,12 @@ static VkPipeline get_pipeline(int prog, int topo, int blend, int stencil, int c
             cba.colorBlendOp = VK_BLEND_OP_ADD; bc[0]=bc[1]=bc[2]=bc[3]=0.25f; break;
         }
     }
+    /* VR depth plane: unblended; written by opaque draws only, so a blended
+     * (semi-transparent) or stencil-only pass keeps the surface beneath. */
+    VkPipelineColorBlendAttachmentState cbas[2] = { cba, {0} };
+    cbas[1].colorWriteMask = (cmask || blend) ? 0 : VK_COLOR_COMPONENT_R_BIT;
     VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
-    cb.attachmentCount = 1; cb.pAttachments = &cba;
+    cb.attachmentCount = s_zp ? 2 : 1; cb.pAttachments = cbas;
     cb.blendConstants[0]=bc[0]; cb.blendConstants[1]=bc[1]; cb.blendConstants[2]=bc[2]; cb.blendConstants[3]=bc[3];
 
     /* Stencil = bit15 mirror (bit0). SET: always+replace, dyn ref. CHECK: test
@@ -1377,6 +1527,11 @@ static inline uint16_t rgba8_to_rgb555(const uint8_t in[4]) {
                       (in[3] >= 0x80 ? 0x8000 : 0));
 }
 
+#if defined(PSX_VR)
+static int  vr_create_resources(void);   /* the VR compose (defined with the present paths) */
+static void vr_free_resources(void);
+#endif
+
 int vk_renderer_init_context(SDL_Window *win) {
     s_win = win;
 #if defined(PSX_SDL3)
@@ -1390,14 +1545,21 @@ int vk_renderer_init_context(SDL_Window *win) {
     if (!p_vkGetInstanceProcAddr) return vk_die("no vkGetInstanceProcAddr from SDL");
 
     if (!load_global_funcs()) return 0;
+#if defined(PSX_VR)
+    /* VR when a headset runtime answers; otherwise the flat window as usual. */
+    s_vr = psx_vr_requested() && psx_vr_xr_init();
+    if (s_vr) vk_log("presenting in VR (OpenXR)");
+#endif
     if (!create_instance()) return 0;
     if (!load_instance_funcs()) return 0;
+    if (!s_vr) {
 #if defined(PSX_SDL3)
-    if (!SDL_Vulkan_CreateSurface(s_win, s_instance, NULL, &s_surface))
+        if (!SDL_Vulkan_CreateSurface(s_win, s_instance, NULL, &s_surface))
 #else
-    if (!SDL_Vulkan_CreateSurface(s_win, s_instance, &s_surface))
+        if (!SDL_Vulkan_CreateSurface(s_win, s_instance, &s_surface))
 #endif
-        return vk_die("SDL_Vulkan_CreateSurface failed");
+            return vk_die("SDL_Vulkan_CreateSurface failed");
+    }
     if (!pick_device()) return 0;
     if (!create_device()) return 0;
 
@@ -1412,10 +1574,19 @@ int vk_renderer_init_context(SDL_Window *win) {
     if (p_vkCreateCommandPool(s_dev, &pi, NULL, &s_work_pool) != VK_SUCCESS)
         return vk_die("vkCreateCommandPool(work) failed");
 
-    if (!create_swapchain()) return 0;
+    if (!s_vr && !create_swapchain()) return 0;
     if (!create_sync()) return 0;
     if (!create_vram_image()) return 0;
     if (!create_render_targets()) return 0;
+#if defined(PSX_VR)
+    if (s_vr) {
+        if (!psx_vr_start(p_vkGetInstanceProcAddr, s_instance, s_phys, s_dev, s_qfam, s_queue))
+            return vk_die("OpenXR session failed");
+        if (!vr_create_resources()) return 0;
+        gpu_vr_depth_set(s_zp);   /* gpu.c feeds the depth plane per triangle */
+        if (!s_zp) vk_log("no independentBlend: VR shows the picture without depth");
+    }
+#endif
 
     s_ctx_ok = 1;
     vk_log("instance/device/swapchain/VRAM + raw mirror/pipelines ready");
@@ -1426,6 +1597,12 @@ static void cpres_cache_free(void);   /* fwd: CPU-present resource cache */
 static void osd_staging_free(void);
 void vk_renderer_shutdown(void) {
     if (!s_dev) return;
+#if defined(PSX_VR)
+    if (s_vr) {
+        psx_vr_shutdown();      /* frame loop + session first: they use the device */
+        gpu_vr_depth_set(0);
+    }
+#endif
     p_vkDeviceWaitIdle(s_dev);
     vk_gpu_sync_internal();   /* reclaim deferred staging before tearing down */
     cpres_cache_free();       /* FMV CPU-present cached image + staging */
@@ -1435,6 +1612,9 @@ void vk_renderer_shutdown(void) {
             staging_destroy(s_staging_cache[i].buf, s_staging_cache[i].mem);
     }
     wide_free_all();          /* native-wide surfaces (color + DS + framebuffers) */
+#if defined(PSX_VR)
+    if (s_vr) vr_free_resources();
+#endif
     for (int i = 0; i < PIPE_CACHE_N; i++)
         if (s_pipe_cache[i]) p_vkDestroyPipeline(s_dev, s_pipe_cache[i], NULL);
     if (s_pipe_pack)   p_vkDestroyPipeline(s_dev, s_pipe_pack, NULL);
@@ -1460,6 +1640,10 @@ void vk_renderer_shutdown(void) {
     if (s_ds_view)     p_vkDestroyImageView(s_dev, s_ds_view, NULL);
     if (s_scratch_view)p_vkDestroyImageView(s_dev, s_scratch_view, NULL);
     if (s_up_view)     p_vkDestroyImageView(s_dev, s_up_view, NULL);
+    if (s_zp_view)     p_vkDestroyImageView(s_dev, s_zp_view, NULL);
+    if (s_zp_img)      p_vkDestroyImage(s_dev, s_zp_img, NULL);
+    if (s_zp_mem)      p_vkFreeMemory(s_dev, s_zp_mem, NULL);
+    s_zp_view = VK_NULL_HANDLE; s_zp_img = VK_NULL_HANDLE; s_zp_mem = VK_NULL_HANDLE;
     if (s_vbuf)        p_vkDestroyBuffer(s_dev, s_vbuf, NULL);
     if (s_vbuf_mem)    p_vkFreeMemory(s_dev, s_vbuf_mem, NULL);
     if (s_tbuf)        p_vkDestroyBuffer(s_dev, s_tbuf, NULL);
@@ -1479,11 +1663,12 @@ void vk_renderer_shutdown(void) {
         if (s_sem_render[i])  p_vkDestroySemaphore(s_dev, s_sem_render[i], NULL);
         if (s_fence[i])       p_vkDestroyFence(s_dev, s_fence[i], NULL);
     }
-    destroy_swapchain();
+    if (!s_vr) destroy_swapchain();
     if (s_work_pool) p_vkDestroyCommandPool(s_dev, s_work_pool, NULL);
     if (s_cmd_pool) p_vkDestroyCommandPool(s_dev, s_cmd_pool, NULL);
     p_vkDestroyDevice(s_dev, NULL); s_dev = VK_NULL_HANDLE;
     if (s_surface) p_vkDestroySurfaceKHR(s_instance, s_surface, NULL);
+    s_surface = VK_NULL_HANDLE;
     if (s_instance) p_vkDestroyInstance(s_instance, NULL);
     s_ctx_ok = 0;
 }
@@ -1671,11 +1856,306 @@ static void letterbox(int sw, int sh, int aw, int ah, VkOffset3D off[2]) {
     off[1].x = x + tw;  off[1].y = y + th;  off[1].z = 1;
 }
 
+/* ---- VR presentation (PSX_VR) ------------------------------------------ */
+/* Instead of the window swapchain, each presented frame becomes two eye views
+ * (stereo.frag: the colour shifted per pixel by the depth plane) side by side
+ * in the eye image, copied into the OpenXR screen swapchain the headset's
+ * compositor shows as a virtual screen (vr_openxr.c). */
+#if defined(PSX_VR)
+typedef struct {
+    float   rect[4];      /* 0..15  */
+    float   clampr[4];    /* 16..31 */
+    float   eye, strength, ref, flat_s;   /* 32..47 */
+    int32_t steps, has_depth;             /* 48..55 */
+} StereoPush;
+
+static VkSampler             s_samp_lin;
+static VkDescriptorSetLayout s_dsl_stereo;
+static VkDescriptorPool      s_dpool_stereo;
+static VkDescriptorSet       s_ds_stereo;
+static VkPipelineLayout      s_pl_stereo;
+static VkPipeline            s_pipe_stereo;
+static VkRenderPass          s_eye_rpass;
+static VkShaderModule        s_mod_st_v, s_mod_st_f;
+static VkFormat              s_eye_fmt;
+static VkImage               s_eye_img;
+static VkDeviceMemory        s_eye_mem;
+static VkImageView           s_eye_view;
+static VkFramebuffer         s_eye_fb;
+static int                   s_eye_w, s_eye_h;
+
+static void vr_eye_free(void) {
+    if (s_eye_fb)   { p_vkDestroyFramebuffer(s_dev, s_eye_fb, NULL); s_eye_fb = VK_NULL_HANDLE; }
+    if (s_eye_view) { p_vkDestroyImageView(s_dev, s_eye_view, NULL); s_eye_view = VK_NULL_HANDLE; }
+    if (s_eye_img)  { p_vkDestroyImage(s_dev, s_eye_img, NULL); s_eye_img = VK_NULL_HANDLE; }
+    if (s_eye_mem)  { p_vkFreeMemory(s_dev, s_eye_mem, NULL); s_eye_mem = VK_NULL_HANDLE; }
+    s_eye_w = s_eye_h = 0;
+}
+
+static int vr_eye_ensure(int w, int h) {
+    if (s_eye_img && s_eye_w == w && s_eye_h == h) return 1;
+    p_vkQueueWaitIdle(s_queue);
+    vr_eye_free();
+    if (!make_image(s_eye_fmt, w, h,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, &s_eye_img, &s_eye_mem, &s_eye_view)) {
+        vr_eye_free();
+        return 0;
+    }
+    VkFramebufferCreateInfo fi = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+    fi.renderPass = s_eye_rpass; fi.attachmentCount = 1; fi.pAttachments = &s_eye_view;
+    fi.width = (uint32_t)w; fi.height = (uint32_t)h; fi.layers = 1;
+    if (p_vkCreateFramebuffer(s_dev, &fi, NULL, &s_eye_fb) != VK_SUCCESS) { vr_eye_free(); return 0; }
+    s_eye_w = w; s_eye_h = h;
+    return 1;
+}
+
+static int vr_create_resources(void) {
+    VkFormat sc = psx_vr_screen_format();
+    s_eye_fmt = sc == VK_FORMAT_B8G8R8A8_SRGB ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
+
+    VkSamplerCreateInfo sci = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+    sci.magFilter = sci.minFilter = VK_FILTER_LINEAR;
+    sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    if (p_vkCreateSampler(s_dev, &sci, NULL, &s_samp_lin) != VK_SUCCESS) return vk_die("vr sampler");
+
+    VkDescriptorSetLayoutBinding b[2] = {
+        { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+        { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL } };
+    VkDescriptorSetLayoutCreateInfo dci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    dci.bindingCount = 2; dci.pBindings = b;
+    if (p_vkCreateDescriptorSetLayout(s_dev, &dci, NULL, &s_dsl_stereo) != VK_SUCCESS) return vk_die("vr dsl");
+    VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 };
+    VkDescriptorPoolCreateInfo pci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    pci.maxSets = 1; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+    if (p_vkCreateDescriptorPool(s_dev, &pci, NULL, &s_dpool_stereo) != VK_SUCCESS) return vk_die("vr pool");
+    VkDescriptorSetAllocateInfo ai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    ai.descriptorPool = s_dpool_stereo; ai.descriptorSetCount = 1; ai.pSetLayouts = &s_dsl_stereo;
+    if (p_vkAllocateDescriptorSets(s_dev, &ai, &s_ds_stereo) != VK_SUCCESS) return vk_die("vr set");
+
+    VkPushConstantRange pr = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(StereoPush) };
+    VkPipelineLayoutCreateInfo li = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    li.setLayoutCount = 1; li.pSetLayouts = &s_dsl_stereo;
+    li.pushConstantRangeCount = 1; li.pPushConstantRanges = &pr;
+    if (p_vkCreatePipelineLayout(s_dev, &li, NULL, &s_pl_stereo) != VK_SUCCESS) return vk_die("vr layout");
+
+    /* Eye pass: written whole, then copied into the headset's swapchain. */
+    VkAttachmentDescription att = {0};
+    att.format = s_eye_fmt; att.samples = VK_SAMPLE_COUNT_1_BIT;
+    att.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    att.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    VkAttachmentReference cref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkSubpassDescription sub = {0};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 1; sub.pColorAttachments = &cref;
+    VkSubpassDependency dep = {0};
+    dep.srcSubpass = 0; dep.dstSubpass = VK_SUBPASS_EXTERNAL;
+    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    dep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dep.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    VkRenderPassCreateInfo rpi = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+    rpi.attachmentCount = 1; rpi.pAttachments = &att;
+    rpi.subpassCount = 1; rpi.pSubpasses = &sub;
+    rpi.dependencyCount = 1; rpi.pDependencies = &dep;
+    if (p_vkCreateRenderPass(s_dev, &rpi, NULL, &s_eye_rpass) != VK_SUCCESS) return vk_die("vr render pass");
+
+    s_mod_st_v = make_module(spv_stereo_vert, spv_stereo_vert_size);
+    s_mod_st_f = make_module(spv_stereo_frag, spv_stereo_frag_size);
+    if (!s_mod_st_v || !s_mod_st_f) return vk_die("vr shader module");
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO } };
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = s_mod_st_v; stages[0].pName = "main";
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = s_mod_st_f; stages[1].pName = "main";
+    VkPipelineVertexInputStateCreateInfo vin = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+    vp.viewportCount = 1; vp.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rs = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState cba = {0};
+    cba.colorWriteMask = 0xF;
+    VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+    cb.attachmentCount = 1; cb.pAttachments = &cba;
+    VkPipelineDepthStencilStateCreateInfo dss = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dy = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+    dy.dynamicStateCount = 2; dy.pDynamicStates = dyn;
+    VkGraphicsPipelineCreateInfo pi = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    pi.stageCount = 2; pi.pStages = stages;
+    pi.pVertexInputState = &vin; pi.pInputAssemblyState = &ia;
+    pi.pViewportState = &vp; pi.pRasterizationState = &rs;
+    pi.pMultisampleState = &ms; pi.pDepthStencilState = &dss; pi.pColorBlendState = &cb;
+    pi.pDynamicState = &dy; pi.layout = s_pl_stereo; pi.renderPass = s_eye_rpass;
+    if (p_vkCreateGraphicsPipelines(s_dev, VK_NULL_HANDLE, 1, &pi, NULL, &s_pipe_stereo) != VK_SUCCESS)
+        return vk_die("vr pipeline");
+    return 1;
+}
+
+static void vr_free_resources(void) {
+    vr_eye_free();
+    if (s_pipe_stereo)  p_vkDestroyPipeline(s_dev, s_pipe_stereo, NULL);
+    if (s_mod_st_v)     p_vkDestroyShaderModule(s_dev, s_mod_st_v, NULL);
+    if (s_mod_st_f)     p_vkDestroyShaderModule(s_dev, s_mod_st_f, NULL);
+    if (s_eye_rpass)    p_vkDestroyRenderPass(s_dev, s_eye_rpass, NULL);
+    if (s_pl_stereo)    p_vkDestroyPipelineLayout(s_dev, s_pl_stereo, NULL);
+    if (s_dpool_stereo) p_vkDestroyDescriptorPool(s_dev, s_dpool_stereo, NULL);
+    if (s_dsl_stereo)   p_vkDestroyDescriptorSetLayout(s_dev, s_dsl_stereo, NULL);
+    if (s_samp_lin)     p_vkDestroySampler(s_dev, s_samp_lin, NULL);
+    if (s_idle_fence)   p_vkDestroyFence(s_dev, s_idle_fence, NULL);
+    s_pipe_stereo = VK_NULL_HANDLE; s_mod_st_v = s_mod_st_f = VK_NULL_HANDLE;
+    s_eye_rpass = VK_NULL_HANDLE; s_pl_stereo = VK_NULL_HANDLE; s_dpool_stereo = VK_NULL_HANDLE;
+    s_dsl_stereo = VK_NULL_HANDLE; s_samp_lin = VK_NULL_HANDLE; s_idle_fence = VK_NULL_HANDLE;
+}
+
+/* The eye picture's size for a source of this aspect (one eye's width/height). */
+static void vr_eye_size(const PsxVrSettings *set, float aspect, int *w, int *h) {
+    int ew = set->eye_width & ~1;
+    int eh = (int)((float)ew / aspect + 0.5f) & ~1;
+    if (eh < 16) eh = 16;
+    *w = ew; *h = eh;
+}
+
+/* The swapchain image goes COLOR_ATTACHMENT -> TRANSFER_DST (and back with
+ * back = 1); the runtime hands it over and takes it back in that layout. */
+static void vr_sc_barrier(VkCommandBuffer cb, VkImage sc, int back) {
+    if (!back)
+        img_barrier(cb, sc, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    else
+        img_barrier(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+}
+
+/* Compose one frame for the headset from a source image region (x0,y0)-(x1,y1)
+ * of a src_w x src_h image, parked in src_park between frames; zp is its depth
+ * plane or VK_NULL_HANDLE (FMV: flat). Batches must already be drained. */
+static void vr_compose(VkImage src, VkImageView src_view, VkImageLayout *src_layout,
+                       VkImageLayout src_park, VkImage zp, VkImageView zp_view,
+                       VkImageLayout *zp_layout, int src_w, int src_h,
+                       int x0, int y0, int x1, int y1, float aspect, int linear) {
+    PsxVrSettings set;
+    psx_vr_settings_get(&set);
+    gpu_vr_depth_frame();
+    int ew, eh;
+    vr_eye_size(&set, aspect, &ew, &eh);
+    if (!vr_eye_ensure(2 * ew, eh)) { host_osd_present_done(); return; }
+    VkImage sc;
+    if (!psx_vr_frame_acquire(2 * ew, eh, &sc)) { host_osd_present_done(); return; }
+
+    VkDescriptorImageInfo ii[2] = {
+        { linear ? s_samp_lin : s_samp, src_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+        { s_samp, zp ? zp_view : src_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } };
+    VkWriteDescriptorSet wr[2] = { { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+                                   { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET } };
+    for (int k = 0; k < 2; k++) {
+        wr[k].dstSet = s_ds_stereo; wr[k].dstBinding = (uint32_t)k; wr[k].descriptorCount = 1;
+        wr[k].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; wr[k].pImageInfo = &ii[k];
+    }
+    p_vkUpdateDescriptorSets(s_dev, 2, wr, 0, NULL);
+
+    VkCommandBuffer cb = begin_oneshot();
+    img_to(cb, src, src_layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (zp) img_to(cb, zp, zp_layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    VkRenderPassBeginInfo rp = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    rp.renderPass = s_eye_rpass; rp.framebuffer = s_eye_fb;
+    rp.renderArea.extent.width = (uint32_t)(2 * ew);
+    rp.renderArea.extent.height = (uint32_t)eh;
+    p_vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
+    p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s_pipe_stereo);
+    p_vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s_pl_stereo, 0, 1, &s_ds_stereo, 0, NULL);
+
+    StereoPush pc;
+    memset(&pc, 0, sizeof pc);
+    const float iw = 1.0f / (float)src_w, ih = 1.0f / (float)src_h;
+    pc.rect[0] = (float)x0 * iw; pc.rect[1] = (float)y0 * ih;
+    pc.rect[2] = (float)x1 * iw; pc.rect[3] = (float)y1 * ih;
+    pc.clampr[0] = pc.rect[0] + 0.5f * iw; pc.clampr[1] = pc.rect[1] + 0.5f * ih;
+    pc.clampr[2] = pc.rect[2] - 0.5f * iw; pc.clampr[3] = pc.rect[3] - 0.5f * ih;
+    pc.strength = (float)set.strength * 0.001f;
+    /* The screen plane: convergence % of the scene's reference depth, as an
+     * inverse depth (the depth plane holds 4096 / SZ). */
+    const float ref_sz = gpu_vr_depth_reference();
+    pc.ref = ref_sz > 0.0f ? 4096.0f / (ref_sz * (float)set.convergence * 0.01f) : 0.0f;
+    pc.flat_s = (float)set.flat_depth * 0.01f * pc.strength;
+    pc.steps = set.quality;
+    pc.has_depth = zp ? 1 : 0;
+    for (int e = 0; e < 2; e++) {
+        VkViewport vp = { (float)(e * ew), 0.0f, (float)ew, (float)eh, 0.0f, 1.0f };
+        VkRect2D sr = { { e * ew, 0 }, { (uint32_t)ew, (uint32_t)eh } };
+        p_vkCmdSetViewport(cb, 0, 1, &vp);
+        p_vkCmdSetScissor(cb, 0, 1, &sr);
+        float sign = e ? 1.0f : -1.0f;
+        if (set.swap_eyes) sign = -sign;
+        pc.eye = set.stereo ? sign : 0.0f;
+        p_vkCmdPushConstants(cb, s_pl_stereo, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
+        p_vkCmdDraw(cb, 3, 1, 0, 0);
+    }
+    p_vkCmdEndRenderPass(cb);   /* eye image -> TRANSFER_SRC */
+
+    vr_sc_barrier(cb, sc, 0);
+    VkImageCopy ic = {0};
+    ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ic.srcSubresource.layerCount = 1;
+    ic.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ic.dstSubresource.layerCount = 1;
+    ic.extent.width = (uint32_t)(2 * ew); ic.extent.height = (uint32_t)eh; ic.extent.depth = 1;
+    p_vkCmdCopyImage(cb, s_eye_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+    vr_sc_barrier(cb, sc, 1);
+    img_to(cb, src, src_layout, src_park);
+    if (zp) img_to(cb, zp, zp_layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    end_oneshot(cb);
+    gpu_sync();   /* submitted (and done: the descriptor set is reused next frame) */
+    psx_vr_frame_release((float)ew / (float)eh);
+    host_osd_present_done();   /* toasts are not drawn in the headset */
+}
+
+static void vr_present_blank(void) {
+    PsxVrSettings set;
+    psx_vr_settings_get(&set);
+    int ew, eh;
+    vr_eye_size(&set, 4.0f / 3.0f, &ew, &eh);
+    VkImage sc;
+    if (!psx_vr_frame_acquire(2 * ew, eh, &sc)) { host_osd_present_done(); return; }
+    VkCommandBuffer cb = begin_oneshot();
+    vr_sc_barrier(cb, sc, 0);
+    VkClearColorValue black = {{0, 0, 0, 1}};
+    VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    p_vkCmdClearColorImage(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rng);
+    vr_sc_barrier(cb, sc, 1);
+    end_oneshot(cb);
+    gpu_sync();
+    psx_vr_frame_release((float)ew / (float)eh);
+    host_osd_present_done();
+}
+#endif /* PSX_VR */
+
 int vk_renderer_present_vram(int disp_x, int disp_y, int w, int h,
                              int linear, int force_4_3) {
     if (!s_ctx_ok) return 0;
     flush_cpu_upload();   /* displayed VRAM may include pending CPU writes */
     flush_tex_batch(); flush_geometry(); gpu_sync();   /* drain all draws; VRAM in TRANSFER_SRC */
+#if defined(PSX_VR)
+    if (s_vr) {
+        int S = s_scale;
+        vr_compose(s_vram_img, s_vram_view, &s_vram_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   s_zp ? s_zp_img : VK_NULL_HANDLE, s_zp_view, &s_zp_layout,
+                   VRAM_W * S, VRAM_H * S, disp_x * S, disp_y * S, (disp_x + w) * S, (disp_y + h) * S,
+                   4.0f / 3.0f, linear);
+        perf_snapshot_present();
+        return 1;
+    }
+#endif
     VkImage sc; VkCommandBuffer cb; uint32_t idx, fr;
     if (!acquire_present(&sc, &cb, &idx, &fr)) return 1; /* frame skipped/recreated */
 
@@ -1715,6 +2195,9 @@ int vk_renderer_present_vram(int disp_x, int disp_y, int w, int h,
 void vk_renderer_present_blank(void) {
     if (!s_ctx_ok) return;
     flush_tex_batch(); flush_geometry(); gpu_sync();
+#if defined(PSX_VR)
+    if (s_vr) { vr_present_blank(); perf_snapshot_present(); return; }
+#endif
     VkImage sc; VkCommandBuffer cb; uint32_t idx, fr;
     if (!acquire_present(&sc, &cb, &idx, &fr)) return;
     img_barrier(cb, sc, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1739,6 +2222,7 @@ void vk_renderer_present_blank(void) {
  * from the staging has fully completed before the next frame rewrites it). */
 static VkImage        s_cpres_img  = VK_NULL_HANDLE;
 static VkDeviceMemory s_cpres_imem = VK_NULL_HANDLE;
+static VkImageView    s_cpres_view = VK_NULL_HANDLE;   /* sampled by the VR compose */
 static VkImageLayout  s_cpres_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 static VkBuffer       s_cpres_buf  = VK_NULL_HANDLE;
 static VkDeviceMemory s_cpres_mem  = VK_NULL_HANDLE;
@@ -1746,6 +2230,7 @@ static void          *s_cpres_map  = NULL;
 static int            s_cpres_w = 0, s_cpres_h = 0;
 
 static void cpres_cache_free(void) {
+    if (s_cpres_view) { p_vkDestroyImageView(s_dev, s_cpres_view, NULL); s_cpres_view = VK_NULL_HANDLE; }
     if (s_cpres_img)  { p_vkDestroyImage(s_dev, s_cpres_img, NULL);  s_cpres_img = VK_NULL_HANDLE; }
     if (s_cpres_imem) { p_vkFreeMemory(s_dev, s_cpres_imem, NULL);   s_cpres_imem = VK_NULL_HANDLE; }
     if (s_cpres_buf)  {
@@ -1771,8 +2256,9 @@ void vk_renderer_present_cpu(const uint32_t *pixels, int src_w, int src_h,
             vk_renderer_present_blank(); return;
         }
         if (!make_image(VK_FORMAT_B8G8R8A8_UNORM, src_w, src_h,
-                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                        VK_IMAGE_ASPECT_COLOR_BIT, &s_cpres_img, &s_cpres_imem, NULL)) {
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                        VK_IMAGE_USAGE_SAMPLED_BIT,
+                        VK_IMAGE_ASPECT_COLOR_BIT, &s_cpres_img, &s_cpres_imem, &s_cpres_view)) {
             cpres_cache_free(); vk_renderer_present_blank(); return;
         }
         s_cpres_w = src_w; s_cpres_h = src_h;
@@ -1781,6 +2267,23 @@ void vk_renderer_present_cpu(const uint32_t *pixels, int src_w, int src_h,
     memcpy(s_cpres_map, pixels, (size_t)src_w * src_h * 4);
     VkBuffer buf = s_cpres_buf;
     VkImage img = s_cpres_img;
+#if defined(PSX_VR)
+    if (s_vr) {   /* FMV / 24-bit frames: no depth, flat in both eyes */
+        VkCommandBuffer ucb = begin_oneshot();
+        img_to(ucb, img, &s_cpres_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkBufferImageCopy ubc = {0};
+        ubc.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ubc.imageSubresource.layerCount = 1;
+        ubc.imageExtent.width = src_w; ubc.imageExtent.height = src_h; ubc.imageExtent.depth = 1;
+        p_vkCmdCopyBufferToImage(ucb, buf, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ubc);
+        img_to(ucb, img, &s_cpres_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        end_oneshot(ucb);
+        vr_compose(img, s_cpres_view, &s_cpres_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_NULL_HANDLE, VK_NULL_HANDLE, NULL, src_w, src_h, 0, 0, src_w, src_h,
+                   4.0f / 3.0f, linear);
+        perf_snapshot_present();
+        return;
+    }
+#endif
 
     VkImage sc; VkCommandBuffer cb; uint32_t idx, fr;
     if (!acquire_present(&sc, &cb, &idx, &fr)) return;
@@ -1838,6 +2341,23 @@ int vk_renderer_present_wide(int disp_x, int disp_y, int disp_h, int linear) {
     if (i < 0) return 0;
     flush_cpu_upload();
     flush_tex_batch(); flush_geometry(); gpu_sync();
+#if defined(PSX_VR)
+    if (s_vr) {
+        int S = s_scale;
+        int native_w = s_wide_w - 2 * s_wide_offset;
+        if (native_w <= 0) native_w = s_wide_w;
+        int sy0 = disp_y * S, sy1 = (disp_y + disp_h) * S;
+        if (sy0 < 0) sy0 = 0;
+        if (sy1 > VRAM_H * S) sy1 = VRAM_H * S;
+        vr_compose(s_wide_img[i], s_wide_view[i], &s_wide_layout[i],
+                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   s_zp ? s_wide_zp_img[i] : VK_NULL_HANDLE, s_wide_zp_view[i], &s_wide_zp_layout[i],
+                   s_wide_w * S, VRAM_H * S, 0, sy0, s_wide_w * S, sy1,
+                   (4.0f * (float)s_wide_w) / (3.0f * (float)native_w), linear);
+        perf_snapshot_present();
+        return 1;
+    }
+#endif
     VkImage sc; VkCommandBuffer cb; uint32_t idx, fr;
     if (!acquire_present(&sc, &cb, &idx, &fr)) return 1;  /* frame skipped/recreated */
 
@@ -1976,6 +2496,10 @@ static void begin_geo_pass(VkCommandBuffer cb) {
         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         0, 0, NULL, 0, NULL, 1, &db);
     color_self_barrier(cb, s_vram_img);
+    if (s_zp) {
+        img_to(cb, s_zp_img, &s_zp_layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        color_self_barrier(cb, s_zp_img);
+    }
     VkRenderPassBeginInfo rp = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     rp.renderPass = s_rpass; rp.framebuffer = s_fbo;
     rp.renderArea.extent.width = VRAM_W * s_scale;
@@ -2537,6 +3061,10 @@ static void wide_free_all(void) {
         if (s_wide_ds_view[i]) { p_vkDestroyImageView(s_dev, s_wide_ds_view[i], NULL); s_wide_ds_view[i] = VK_NULL_HANDLE; }
         if (s_wide_ds_img[i])  { p_vkDestroyImage(s_dev, s_wide_ds_img[i], NULL); s_wide_ds_img[i] = VK_NULL_HANDLE; }
         if (s_wide_ds_mem[i])  { p_vkFreeMemory(s_dev, s_wide_ds_mem[i], NULL); s_wide_ds_mem[i] = VK_NULL_HANDLE; }
+        if (s_wide_zp_view[i]) { p_vkDestroyImageView(s_dev, s_wide_zp_view[i], NULL); s_wide_zp_view[i] = VK_NULL_HANDLE; }
+        if (s_wide_zp_img[i])  { p_vkDestroyImage(s_dev, s_wide_zp_img[i], NULL); s_wide_zp_img[i] = VK_NULL_HANDLE; }
+        if (s_wide_zp_mem[i])  { p_vkFreeMemory(s_dev, s_wide_zp_mem[i], NULL); s_wide_zp_mem[i] = VK_NULL_HANDLE; }
+        s_wide_zp_layout[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         s_wide_layout[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         s_wide_base[i] = -1;
     }
@@ -2557,16 +3085,23 @@ static int wide_surf_for(int base_x) {
         int S = s_scale, w = s_wide_w * S, h = VRAM_H * S;
         if (!make_image(VK_FORMAT_R8G8B8A8_UNORM, w, h,
                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                        VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                         VK_IMAGE_ASPECT_COLOR_BIT, &s_wide_img[i], &s_wide_mem[i], &s_wide_view[i]))
+            return -1;
+        if (s_zp && !make_image(VK_FORMAT_R16_SFLOAT, w, h,
+                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                VK_IMAGE_ASPECT_COLOR_BIT, &s_wide_zp_img[i], &s_wide_zp_mem[i],
+                                &s_wide_zp_view[i]))
             return -1;
         if (!make_image(s_ds_format, w, h,
                         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                         VK_IMAGE_ASPECT_STENCIL_BIT, &s_wide_ds_img[i], &s_wide_ds_mem[i], &s_wide_ds_view[i]))
             return -1;
-        VkImageView views[2] = { s_wide_view[i], s_wide_ds_view[i] };
+        VkImageView views[3] = { s_wide_view[i], s_wide_ds_view[i], VK_NULL_HANDLE };
+        if (s_zp) { views[1] = s_wide_zp_view[i]; views[2] = s_wide_ds_view[i]; }
         VkFramebufferCreateInfo fi = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-        fi.renderPass = s_rpass; fi.attachmentCount = 2; fi.pAttachments = views;
+        fi.renderPass = s_rpass; fi.attachmentCount = s_zp ? 3 : 2; fi.pAttachments = views;
         fi.width = (uint32_t)w; fi.height = (uint32_t)h; fi.layers = 1;
         if (p_vkCreateFramebuffer(s_dev, &fi, NULL, &s_wide_fb[i]) != VK_SUCCESS)
             return -1;
@@ -2578,6 +3113,12 @@ static int wide_surf_for(int base_x) {
         VkImageSubresourceRange crng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         p_vkCmdClearColorImage(cb, s_wide_img[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &crng);
         img_to(cb, s_wide_img[i], &s_wide_layout[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        if (s_zp) {
+            s_wide_zp_layout[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+            img_to(cb, s_wide_zp_img[i], &s_wide_zp_layout[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            p_vkCmdClearColorImage(cb, s_wide_zp_img[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &crng);
+            img_to(cb, s_wide_zp_img[i], &s_wide_zp_layout[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        }
         VkImageMemoryBarrier db = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         db.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; db.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         db.srcQueueFamilyIndex = db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -2628,6 +3169,10 @@ static void wide_pass_begin(VkCommandBuffer cb) {
         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         0, 0, NULL, 0, NULL, 1, &db);
     color_self_barrier(cb, s_wide_img[i]);
+    if (s_zp) {
+        img_to(cb, s_wide_zp_img[i], &s_wide_zp_layout[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        color_self_barrier(cb, s_wide_zp_img[i]);
+    }
     VkRenderPassBeginInfo rp = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     rp.renderPass = s_rpass; rp.framebuffer = s_wide_fb[i];
     rp.renderArea.extent.width = (uint32_t)(s_wide_w * S);
@@ -2696,10 +3241,11 @@ static inline void col888(uint32_t c, float out[3]) {
     out[1] = ((c >> 8)  & 0xFF) / 255.0f;
     out[2] = ((c >> 16) & 0xFF) / 255.0f;
 }
-static inline void push_vert(float x, float y, const float rgb[3]) {
+static inline void push_vert(float x, float y, const float rgb[3], float z) {
     Vert *v = &s_vmap[s_vbase + s_vcount++];
     v->x = x; v->y = y; v->r = rgb[0]; v->g = rgb[1]; v->b = rgb[2];
     v->a = (float)s_geo_mask;
+    v->z = z;
     rect_add(&s_geo_bbox, (int)floorf(x), (int)floorf(y), (int)ceilf(x), (int)ceilf(y));
 }
 /* Ensure room for `need` verts (flush mid-batch only between primitives). */
@@ -2727,7 +3273,10 @@ static void tri3(float ax,float ay,const float ca[3],
                  float cx,float cy,const float cc[3]) {
     if (!s_ready) return;
     ensure_room(3);
-    push_vert(ax, ay, ca); push_vert(bx, by, cb_); push_vert(cx, cy, cc);
+    /* The VR inverse depth set for this triangle (gpu.c), else none. */
+    push_vert(ax, ay, ca, s_vz_valid ? s_vz[0] : 0.0f);
+    push_vert(bx, by, cb_, s_vz_valid ? s_vz[1] : 0.0f);
+    push_vert(cx, cy, cc, s_vz_valid ? s_vz[2] : 0.0f);
 }
 static void quad(float x0,float y0,float x1,float y1,float x2,float y2,float x3,float y3,
                  const float c[3]) {
@@ -2770,7 +3319,14 @@ static void vkb_set_perspective_triangle(int enabled, float q0, float q1, float 
 }
 /* The override describes exactly one triangle; drop it once submitted so a
  * later prim can never inherit it. */
-static inline void precise_consumed(void) { s_pc_valid = 0; s_pq_valid = 0; }
+static inline void precise_consumed(void) { s_pc_valid = 0; s_pq_valid = 0; s_vz_valid = 0; }
+
+/* VR depth plane: inverse depth (4096 / SZ) of the next triangle's vertices,
+ * consumed with the sub-pixel override above. */
+static void vkb_set_vertex_depth(int enabled, float d0, float d1, float d2) {
+    s_vz_valid = (enabled && s_zp) ? 1 : 0;
+    s_vz[0] = d0; s_vz[1] = d1; s_vz[2] = d2;
+}
 
 /* Position a vertex: the sub-pixel value when geometry_correction supplied one
  * for this triangle, else the integer GP0 position. */
@@ -2801,8 +3357,8 @@ static void wide_overlay_rect(int y, int h, uint16_t c, int semi) {
     float col[3]; col555(c, col);
     uint32_t base = s_vbase + s_vcount;   /* == s_vbase (batches drained) */
     float x0 = 0.0f, x1 = (float)s_wide_w, fy0 = (float)y, fy1 = (float)(y + h);
-    push_vert(x0, fy0, col); push_vert(x1, fy0, col); push_vert(x1, fy1, col);
-    push_vert(x0, fy0, col); push_vert(x1, fy1, col); push_vert(x0, fy1, col);
+    push_vert(x0, fy0, col, 0.0f); push_vert(x1, fy0, col, 0.0f); push_vert(x1, fy1, col, 0.0f);
+    push_vert(x0, fy0, col, 0.0f); push_vert(x1, fy1, col, 0.0f); push_vert(x0, fy1, col, 0.0f);
     s_vbase += s_vcount; s_vcount = 0;    /* consume privately */
     int blend = (semi < 0) ? 0 : (semi + 1);
     int S = s_scale;
@@ -3014,6 +3570,7 @@ static void gpu_textured_triangle(const int *xs, const int *ys, const int *us, c
         vp[14] = (float)lim[0];  vp[15] = (float)lim[1];
         vp[16] = (float)lim[2];  vp[17] = (float)lim[3];
         vp[18] = s_pq_valid ? s_pq[i] : 0.0f;   /* a_q; 0 = affine */
+        vp[19] = s_vz_valid ? s_vz[i] : 0.0f;   /* a_vz; 0 = no depth (2D) */
         if (xs[i] < bx0) bx0 = xs[i]; if (xs[i] > bx1) bx1 = xs[i];
         if (ys[i] < by0) by0 = ys[i]; if (ys[i] > by1) by1 = ys[i];
     }
@@ -3160,12 +3717,16 @@ static void vkb_wide_clear(int base_x, int y, int h, uint16_t color) {
     VkCommandBuffer cb = begin_oneshot();
     img_to(cb, s_wide_img[i], &s_wide_layout[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     color_self_barrier(cb, s_wide_img[i]);
+    if (s_zp) {
+        img_to(cb, s_wide_zp_img[i], &s_wide_zp_layout[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        color_self_barrier(cb, s_wide_zp_img[i]);
+    }
     VkRenderPassBeginInfo rp = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     rp.renderPass = s_rpass; rp.framebuffer = s_wide_fb[i];
     rp.renderArea.extent.width = (uint32_t)(s_wide_w * S);
     rp.renderArea.extent.height = (uint32_t)H;
     p_vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
-    VkClearAttachment ca[2] = {0};
+    VkClearAttachment ca[3] = {0};
     ca[0].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     ca[0].colorAttachment = 0;
     ca[0].clearValue.color.float32[0] = (float)((color)       & 0x1F) / 31.0f;
@@ -3175,8 +3736,11 @@ static void vkb_wide_clear(int base_x, int y, int h, uint16_t color) {
     ca[1].aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
     ca[1].clearValue.depthStencil.depth = 0.0f;
     ca[1].clearValue.depthStencil.stencil = (color >> 15) & 1;
+    ca[2].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;   /* VR depth plane: no depth */
+    ca[2].colorAttachment = 1;
+    const uint32_t nca = s_zp ? 3u : 2u;
     VkClearRect cr = { { { 0, y0 }, { (uint32_t)(s_wide_w * S), (uint32_t)(y1 - y0) } }, 0, 1 };
-    p_vkCmdClearAttachments(cb, 2, ca, 1, &cr);
+    p_vkCmdClearAttachments(cb, nca, ca, 1, &cr);
     p_vkCmdEndRenderPass(cb);
     end_oneshot(cb);
 }
@@ -3198,12 +3762,16 @@ static void vkb_wide_clear_margins(int base_x, int y, int h, uint16_t color, int
     VkCommandBuffer cb = begin_oneshot();
     img_to(cb, s_wide_img[i], &s_wide_layout[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     color_self_barrier(cb, s_wide_img[i]);
+    if (s_zp) {
+        img_to(cb, s_wide_zp_img[i], &s_wide_zp_layout[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        color_self_barrier(cb, s_wide_zp_img[i]);
+    }
     VkRenderPassBeginInfo rp = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     rp.renderPass = s_rpass; rp.framebuffer = s_wide_fb[i];
     rp.renderArea.extent.width = (uint32_t)W;
     rp.renderArea.extent.height = (uint32_t)H;
     p_vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
-    VkClearAttachment ca[2] = {0};
+    VkClearAttachment ca[3] = {0};
     ca[0].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     ca[0].colorAttachment = 0;
     ca[0].clearValue.color.float32[0] = (float)((color)       & 0x1F) / 31.0f;
@@ -3213,13 +3781,16 @@ static void vkb_wide_clear_margins(int base_x, int y, int h, uint16_t color, int
     ca[1].aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
     ca[1].clearValue.depthStencil.depth = 0.0f;
     ca[1].clearValue.depthStencil.stencil = (color >> 15) & 1;
+    ca[2].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;   /* VR depth plane: no depth */
+    ca[2].colorAttachment = 1;
+    const uint32_t nca = s_zp ? 3u : 2u;
     VkClearRect cr[2];
     uint32_t ncr = 0;
     if (sides & 1)
         cr[ncr++] = (VkClearRect){ { { 0, y0 }, { (uint32_t)margin, (uint32_t)(y1 - y0) } }, 0, 1 };
     if (sides & 2)
         cr[ncr++] = (VkClearRect){ { { W - margin, y0 }, { (uint32_t)margin, (uint32_t)(y1 - y0) } }, 0, 1 };
-    if (ncr) p_vkCmdClearAttachments(cb, 2, ca, ncr, cr);
+    if (ncr) p_vkCmdClearAttachments(cb, nca, ca, ncr, cr);
     p_vkCmdEndRenderPass(cb);
     end_oneshot(cb);
 }
@@ -3309,6 +3880,7 @@ static const GpuRenderBackend VK_BACKEND = {
     .wide_clear                    = vkb_wide_clear,
     .wide_clear_margins            = vkb_wide_clear_margins,
     .render_wide_display           = vkb_render_wide_display,
+    .set_vertex_depth              = vkb_set_vertex_depth,
 };
 
 /* Returned unconditionally (like gl_backend_get): the table is selected before
